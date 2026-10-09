@@ -1,0 +1,57 @@
+module gateway.port
+
+// The host half of the gateway, declared.
+//
+// Rho cannot open a tty, write a datagram, read a clock or hold state two
+// goroutines share. Each of those is declared here as an `extern fn`, and the
+// `gateway` port named in project.yml supplies the implementation. Nothing else
+// about the gateway is host-side: the frame grammar, the dispatch rule and the
+// JSON are the Rho that calls these.
+
+// config maps the deployment names onto the ones the generated service reads,
+// so REST_PORT is the gateway's listener as a RoboHub deployment expects.
+extern fn gateway_config() void
+
+// serial_start asks for the link named by SERIAL_PORT, at SERIAL_BAUD.
+extern fn gateway_serial_start() bool
+
+// serial_read returns one COBS frame - the bytes between two 0x00 delimiters -
+// waiting at most timeout_ms and returning "" on timeout or when closed.
+extern fn gateway_serial_read(timeout_ms: u32) string
+
+// serial_write writes a frame and its delimiter. The caller passes encoded
+// bytes, so what leaves the port is what the Rho encoder produced.
+extern fn gateway_serial_write(data: string) bool
+
+// udp_start opens the collector named by PLOTJUGGLER_ADDR.
+extern fn gateway_udp_start() bool
+
+// udp_send writes one datagram, fire and forget.
+extern fn gateway_udp_send(text: string) bool
+
+// now_ms is milliseconds since the gateway started, a duration and not a wall
+// clock that can step backwards.
+extern fn gateway_now_ms() u32
+
+// f32_str renders a float with the two decimals a telemetry frame carries.
+extern fn gateway_f32_str(value: f32) string
+
+// The node set: which boards a gateway has heard from, so a listing can name
+// them without the Rho program keeping its own table.
+extern fn gateway_node_seen(id: u32) void
+extern fn gateway_node_count() u32
+extern fn gateway_node_at(index: u32) u32
+
+// The shared state: the serial reader writes it, a handler reads it.
+extern fn gateway_state_set(key: string, value: string) void
+extern fn gateway_state_get(key: string) string
+extern fn gateway_state_set_u32(key: string, value: u32) void
+extern fn gateway_state_get_u32(key: string) u32
+extern fn gateway_state_set_f32(key: string, value: f32) void
+extern fn gateway_state_get_f32(key: string) f32
+
+// Transaction correlation: a handler registers a tx_id and waits; the reader
+// signals the matching response frame.
+extern fn gateway_rpc_register(tx: u32) void
+extern fn gateway_rpc_wait(tx: u32, timeout_ms: u32) string
+extern fn gateway_rpc_signal(tx: u32, payload: string) bool

@@ -1,0 +1,54 @@
+module gateway.stream
+
+// What a valid telemetry frame becomes: the latest state, per node, and one
+// line for the collector.
+//
+// A reading names its board, so a gateway that hears several — some through a
+// repeater — keeps each one's newest values under its own keys and can still
+// answer "the latest, whichever board".
+
+// node_key is the state key one field of one board lives under.
+fn node_key(id: u32, suffix: string) string {
+    return "node." + int_to_str(id) + suffix
+}
+
+// status_text is the schema's status as a word a person reads.
+fn status_text(status: u32) string {
+    if status != 0 {
+        return "FAULT"
+    }
+    return "OK"
+}
+
+fn handle_telemetry(payload: string) void {
+    if !telemetry_valid(payload) {
+        return
+    }
+    let message: Telemetry = telemetry_unmarshal(payload)
+    let id: u32 = u32(message.node_id)
+
+    gateway_node_seen(id)
+    gateway_state_set_f32(node_key(id, ".temperature_c"), message.temperature_c)
+    gateway_state_set_u32(node_key(id, ".status"), message.status)
+    gateway_state_set_u32(node_key(id, ".last_updated_ms"), message.timestamp_ms)
+
+    // The most recent frame, whichever board sent it, for the single reading
+    // endpoint and for the stream.
+    gateway_state_set("latest_node", int_to_str(id))
+    gateway_state_set_f32("temperature_c", message.temperature_c)
+    gateway_state_set_u32("status", message.status)
+    gateway_state_set_u32("last_updated_ms", message.timestamp_ms)
+    gateway_state_set_u32("frames", gateway_state_get_u32("frames") + 1)
+
+    stream_publish(id, message.timestamp_ms, message.temperature_c, message.status)
+}
+
+// stream_publish renders one PlotJuggler record and sends it. `node` is part of
+// the record so a plot of several boards can be told apart.
+fn stream_publish(node: u32, timestamp: u32, temperature: f32, status: u32) bool {
+    let line: string = "{\"node_id\":" + int_to_str(node) +
+        ",\"timestamp_ms\":" + int_to_str(timestamp) +
+        ",\"temperature_c\":" + gateway_f32_str(temperature) +
+        ",\"status\":" + int_to_str(status) + "}\n"
+    return gateway_udp_send(line)
+}
