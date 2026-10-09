@@ -1,0 +1,54 @@
+module gateway
+
+// robohub-gateway - the edge gateway for RoboHub firmware nodes.
+//
+// It reads COBS frames from a serial link, keeps the latest telemetry, streams
+// each reading to PlotJuggler over UDP, and serves the same state and the RPC
+// that changes a node's sampling rate over HTTP.
+//
+// The host primitives it needs are declared in gateway/port.rho and supplied by
+// the `gateway` port; the wire grammar and the routing are the Rho below.
+
+// The host declarations, the generated protocol and transport, and the pieces
+// of the gateway. `include` keeps them in this module, so an extern's name is
+// the name the generated port implements and no call is qualified.
+include "gateway/port.rho"
+include "gateway/protocol.rho"
+include "gateway/ingest.rho"
+include "gateway/stream.rho"
+include "gateway/state.rho"
+
+import std.web.http
+
+route GET  "/api/v1/telemetry/temperature" => latest_temperature
+route GET  "/api/v1/nodes" => nodes
+route POST "/api/v1/telemetry/sampling-rate" => set_sampling_rate
+
+// A liveness probe is registered by the router port for every service, so this
+// module does not declare one; GET /healthz answers {"status":"ok"} already.
+
+// init runs on every target before the service starts. Bringing the link up
+// here means the first request already has a reader behind it.
+fn init() void {
+    // REST_PORT is the gateway's name for the listener; let it stand in for the
+    // generated service's RHO_HTTP_ADDR before the address is chosen.
+    gateway_config()
+    print("robohub-gateway: starting\n")
+}
+
+// background runs on its own goroutine beside the HTTP listener. It owns the
+// link: read a frame, route it, repeat. If the link cannot be opened the
+// service still answers - it just has nothing to report.
+fn background() void {
+    if !gateway_serial_start() {
+        print("robohub-gateway: no serial link, ingest disabled\n")
+        return
+    }
+    gateway_udp_start()
+    while true {
+        let frame: string = gateway_serial_read(100)
+        if strlen(frame) > 0 {
+            ingest_frame(frame)
+        }
+    }
+}

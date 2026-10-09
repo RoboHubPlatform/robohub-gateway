@@ -1,0 +1,68 @@
+#
+# @file module.yml
+# @brief robohub-gateway — the edge gateway for RoboHub nodes.
+#
+# @project RoboHub Gateway
+# @license MIT
+#
+
+module:
+  name: robohub-gateway
+  type: rho
+  version: 0.1.0
+  description: >
+    Edge gateway for RoboHub firmware nodes: ingests COBS frames over serial,
+    keeps each node's latest state, streams telemetry to PlotJuggler over UDP,
+    and serves a REST API for web clients.
+
+main: src/main.rho
+
+# A gateway is a long-running service, so it generates the Go server target and
+# nothing else. The target is written out here rather than in a separate
+# project.yml: it is the same file as the rest of what this module declares.
+#
+# The default go-server has no ports. This one declares the `gateway` port,
+# which supplies exactly the host primitives the Rho sources call — the serial
+# link, UDP, a monotonic clock, node attribution and the shared state a reader
+# and an HTTP handler hold — and nothing else. The frame grammar (COBS,
+# Fletcher-16, the header) stays in the Rho sources.
+build:
+  language: go
+  targets:
+    - id: go-server
+      emitter: go
+      kind: server
+      description: RoboHub gateway HTTP service
+      # Method-and-wildcard routing from the standard library, nothing fetched.
+      router: serveMux
+      ports:
+        - gateway
+      middleware:
+        # A web client on another origin reads the telemetry API.
+        - name: request_id
+        - name: cors
+          options:
+            origin: "*"
+      files:
+        - path: app.go
+          role: implementation
+        - path: runtime.go
+          role: runtime
+        - path: server.go
+          role: server
+        - path: main.go
+          role: entrypoint
+        - path: go.mod
+          role: build
+        - path: static
+          kind: dir
+
+# The gateway documents itself: the page below ships with the source, so what a
+# reader needs to run it travels with the code that is run.
+docs:
+  title: RoboHub Gateway
+  section: applications
+  order: "20"
+  index: docs/index.md
+  sources:
+    - docs/index.md

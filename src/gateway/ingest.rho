@@ -1,0 +1,29 @@
+module gateway.ingest
+
+// What a frame from the link means.
+//
+// The framing and the payloads are generated (src/gateway/protocol.rho): COBS,
+// the Fletcher-16 check and the header come from the schema, the same as the
+// firmware's robohub-transport. This is only the decision - unsolicited
+// telemetry updates the state and the stream, and a response wakes the handler
+// that is waiting on its tx_id.
+
+fn ingest_frame(encoded: string) void {
+    let frame: TransportFrame = robohub_telemetry_v1_unframe(encoded)
+    if !frame.ok {
+        return
+    }
+
+    // tx_id 0 is unsolicited, so it is telemetry and no one is waiting for it.
+    if frame.tx_id == 0 {
+        if frame.msg_id == MESSAGE_ID_TELEMETRY {
+            handle_telemetry(frame.payload)
+        }
+        return
+    }
+
+    // A non-zero tx_id answers a command this gateway sent.
+    if frame.msg_id == MESSAGE_ID_SET_SAMPLING_RATE_RESPONSE {
+        gateway_rpc_signal(frame.tx_id, frame.payload)
+    }
+}
