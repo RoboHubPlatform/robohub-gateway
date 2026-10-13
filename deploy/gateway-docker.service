@@ -1,0 +1,60 @@
+# systemd unit for the RoboHub gateway, run as a container.
+#
+# The same shape as the registry's unit: systemd pulls the image, starts the
+# container in the foreground, and restarts it. No Docker restart policy is set,
+# because systemd is the thing that restarts it.
+#
+# Two ports, and they are different kinds of thing:
+#
+#   REST_PORT     the HTTP API, bound to loopback — nginx is what faces the web
+#   UPLINK_PORT   where gateways below dial in, bound to the network, because
+#                 they are somewhere else — open it in the firewall, or front it
+#                 with an nginx `stream` proxy
+#
+# A gateway with a board wired to it also needs the device:
+#
+#   --device /dev/ttyACM0:/dev/ttyACM0 --group-add dialout
+#
+# and a master that only aggregates gateways needs no device at all.
+#
+#   sudo install -m 0644 deploy/gateway-docker.service /etc/systemd/system/gateway-docker.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now gateway-docker
+
+[Unit]
+Description=RoboHub gateway
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+
+# The image to run. Replace with the published image and tag.
+Environment=IMAGE=<dockerhub-user>/robohub-gateway:latest
+
+# What this gateway is, and where it listens.
+Environment=GATEWAY_MODE=master
+Environment=GATEWAY_AREA=1
+Environment=REST_PORT=8080
+Environment=UPLINK_PORT=5001
+Environment=PLOTJUGGLER_ADDR=127.0.0.1:9870
+
+ExecStartPre=-/usr/bin/docker pull ${IMAGE}
+ExecStartPre=-/usr/bin/docker rm -f gateway
+
+ExecStart=/usr/bin/docker run --rm --name gateway \
+    -e GATEWAY_MODE -e GATEWAY_AREA -e REST_PORT -e UPLINK_PORT -e PLOTJUGGLER_ADDR \
+    -p 127.0.0.1:8080:8080 \
+    -p 5001:5001 \
+    --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
+    ${IMAGE}
+
+Restart=on-failure
+RestartSec=5
+# The first start regenerates and compiles the project inside the container.
+TimeoutStartSec=300
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

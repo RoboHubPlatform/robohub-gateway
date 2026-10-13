@@ -1,11 +1,12 @@
 module gateway.state
 
-// The REST side: reading the latest state, and asking a node to change.
+// The REST side: reading the latest state, asking a device to change, and saying
+// what the gateway itself is doing.
 //
 // The read is a lookup, because the reader has already parsed the frame. The
-// write is an RPC: marshal the generated request, frame it with the generated
-// robohub transport, write it, and wait for the acknowledgement that carries the
-// caller's tx_id back.
+// write is a control: marshal the generated request for the device, frame it
+// with the generated robohub transport, write it, and wait for the
+// acknowledgement that carries the caller's tx_id back.
 
 // next_tx hands out the next transaction id. It is monotonic and shared with
 // the reader through the port, so two handlers never choose the same one.
@@ -21,69 +22,288 @@ fn gateway_error(status: u32, message: string) Response {
     return Response{ status, "{\"success\":false,\"error\":\"" + message + "\"}", "application/json" }
 }
 
-// latest_temperature serves the newest telemetry, from whichever board sent it
+/* -------------------------------------------------------------------------- */
+/*  The uplink                                                                */
+/* -------------------------------------------------------------------------- */
+
+// drain_uplink applies every frame an uplink has sent since the last time it
+// was drained. The listener queues what arrives while the service is idle, and
+// this empties the queue — a request-driven service processes what it did not
+// ask for when it is asked for something.
+fn drain_uplink() u32 {
+    var applied: u32 = 0
+    var guard: u32 = 0
+    while guard < 4096 {
+        let frame: string = gateway_uplink_next()
+        if strlen(frame) == 0 {
+            break
+        }
+        apply_uplink_frame(frame)
+        applied = applied + 1
+        guard = guard + 1
+    }
+    return applied
+}
+
+// apply_uplink_frame decides what one uplink frame means. A reading is a device
+// this gateway does not hear directly — a board behind a relay — and becomes the
+// same device record a local reading would. An announce says which gateway is
+// below and the area it speaks for, which is what a command is routed down by.
+fn apply_uplink_frame(encoded: string) void {
+    let frame: TransportFrame = robohub_v1_unframe(encoded)
+    if !frame.ok {
+        return
+    }
+
+    if frame.msg_id == MESSAGE_ID_READING {
+        handle_reading(frame.payload)
+        return
+    }
+
+    // A response from a child — to a command this gateway routed down — wakes
+    // the handler waiting on that transaction, exactly as one from the local
+    // link does.
+    if frame.msg_id == MESSAGE_ID_CONTROL_RESPONSE || frame.msg_id == MESSAGE_ID_DIAG_RESPONSE {
+        if frame.tx_id != 0 {
+            gateway_rpc_signal(frame.tx_id, frame.payload)
+            // A command routed down is answered here, not in the request that
+            // routed it, so the answer is kept where the transaction id names it.
+            if control_response_valid(frame.payload) {
+                let ack: ControlResponse = control_response_unmarshal(frame.payload)
+                gateway_state_set_u32("ack." + int_to_str(frame.tx_id), ack.argument)
+            }
+        }
+        return
+    }
+
+    if frame.msg_id == MESSAGE_ID_ANNOUNCE && announce_valid(frame.payload) {
+        let announce: Announce = announce_unmarshal(frame.payload)
+        let child: u32 = device_key(u32(announce.gateway.area_id), u32(announce.gateway.link_id))
+        // Bind the child to the link it announced itself on, so a command for
+        // its area can be sent back down the way the announcement came up.
+        gateway_uplink_bind(u32(announce.gateway.area_id), u32(announce.gateway.link_id),
+            gateway_uplink_connection())
+        gateway_state_set_u32("child." + int_to_str(child), u32(announce.area_id))
+        // The area it speaks for, so a device in that area is known to be behind
+        // it rather than on this gateway's own link.
+        gateway_state_set_u32("area." + int_to_str(u32(announce.area_id)), child)
+        gateway_state_set_u32("children", gateway_state_get_u32("children") + 1)
+    }
+}
+
+// uplink_pump drains the uplink and says how many frames it applied, so a
+// supervisor can drive a master that nothing else is asking yet.
+fn uplink_pump(req: Request) Response {
+    let applied: u32 = drain_uplink()
+    return json(200, "{\"applied\":" + int_to_str(applied) + "}")
+}
+
+// latest_temperature serves the newest telemetry, from whichever device sent it
 // last, or a zero reading before any frame has arrived.
 fn latest_temperature(req: Request) Response {
-    let id: u32 = gateway_state_get_u32("latest_node")
-    let body: string = "{\"node_id\":" + int_to_str(id) +
+    drain_uplink()
+    let key: u32 = gateway_state_get_u32("latest_device")
+    let body: string = "{\"area_id\":" + int_to_str(device_area(key)) +
+        ",\"node_id\":" + int_to_str(device_node(key)) +
         ",\"temperature_c\":" + gateway_f32_str(gateway_state_get_f32("temperature_c")) +
         ",\"status\":\"" + status_text(gateway_state_get_u32("status")) +
         "\",\"last_updated_ms\":" + int_to_str(gateway_state_get_u32("last_updated_ms")) + "}"
     return json(200, body)
 }
 
-// nodes lists every board a frame has come from, with its newest values.
+// nodes lists every device a frame has come from, with its newest values.
 fn nodes(req: Request) Response {
+    drain_uplink()
     var body: string = "["
     let count: u32 = gateway_node_count()
     var i: u32 = 0
     while i < count {
-        let id: u32 = gateway_node_at(i)
+        let key: u32 = gateway_node_at(i)
         if i > 0 {
             body = body + ","
         }
-        body = body + node_reading(id)
+        body = body + node_reading(key)
         i = i + 1
     }
     return json(200, body + "]")
 }
 
-// node_reading is one board's newest values, as the listing renders it.
-fn node_reading(id: u32) string {
-    return "{\"node_id\":" + int_to_str(id) +
-        ",\"temperature_c\":" + gateway_f32_str(gateway_state_get_f32(node_key(id, ".temperature_c"))) +
-        ",\"status\":\"" + status_text(gateway_state_get_u32(node_key(id, ".status"))) +
-        "\",\"last_updated_ms\":" + int_to_str(gateway_state_get_u32(node_key(id, ".last_updated_ms"))) + "}"
+// node_reading is one device's newest values, as the listing renders it. A
+// device whose smoke has been run carries its last diagnostic too, so a listing
+// says both what it last read and whether it is well.
+fn node_reading(key: u32) string {
+    let base: string = "{\"area_id\":" + int_to_str(device_area(key)) +
+        ",\"node_id\":" + int_to_str(device_node(key)) +
+        ",\"temperature_c\":" + gateway_f32_str(gateway_state_get_f32(device_suffix(key, ".temperature_c"))) +
+        ",\"status\":\"" + status_text(gateway_state_get_u32(device_suffix(key, ".status"))) +
+        "\",\"last_updated_ms\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".last_updated_ms")))
+    if gateway_state_get_u32(device_suffix(key, ".diag_set")) == 0 {
+        return base + "}"
+    }
+    // Splice the stored diagnostic in before the closing brace, rather than
+    // keeping it apart: a device is one record, and a reader wants one.
+    return base + ",\"diag\":" + gateway_state_get(device_suffix(key, ".diag")) + "}"
 }
 
-// set_sampling_rate marshals and frames a 0x0301 command, sends it, and waits
-// for the 0x0302 acknowledgement, answering 504 when the node does not reply.
+// diagnostics says what the gateway itself is doing: the mode it was deployed
+// in, the area it speaks for, how long it has been up, and what it has carried.
+fn diagnostics(req: Request) Response {
+    drain_uplink()
+    let body: string = "{\"mode\":\"" + gateway_mode() + "\"" +
+        ",\"area_id\":" + int_to_str(gateway_area()) +
+        ",\"uptime_ms\":" + int_to_str(gateway_now_ms()) +
+        ",\"devices_seen\":" + int_to_str(gateway_node_count()) +
+        ",\"children\":" + int_to_str(gateway_state_get_u32("children")) +
+        ",\"frames\":" + int_to_str(gateway_state_get_u32("frames")) + "}"
+    return json(200, body)
+}
+
+// set_sampling_rate marshals and frames a control request for a device, sends
+// it, and waits for the acknowledgement that carries the caller's tx_id,
+// answering 504 when the device does not reply.
+//
+// It addresses the device that sent the latest reading. The control family is
+// general — an opcode and an argument — so a second command is another opcode,
+// not another endpoint.
 fn set_sampling_rate(req: Request) Response {
     let interval: u32 = parse_interval_ms(request_body(req))
     if interval == 0 {
         return gateway_error(400, "interval_ms is required and must be positive")
     }
+    let key: u32 = gateway_state_get_u32("latest_device")
+    if key == 0 {
+        return gateway_error(503, "no device has been heard from yet")
+    }
 
     let tx: u32 = next_tx()
     gateway_rpc_register(tx)
 
-    let request: SetSamplingRateRequest = SetSamplingRateRequest { u16(interval) }
-    let encoded: string = robohub_telemetry_v1_frame(
-        MESSAGE_ID_SET_SAMPLING_RATE_REQUEST, tx, set_sampling_rate_request_marshal(request))
+    let device: DeviceId = DeviceId { u16(device_area(key)), u16(device_node(key)) }
+    let request: ControlRequest = ControlRequest { device, u16(1), interval }
+    let encoded: string = robohub_v1_frame(
+        MESSAGE_ID_CONTROL_REQUEST, tx, control_request_marshal(request))
     if !gateway_serial_write(encoded) {
         return gateway_error(503, "the serial link is unavailable")
     }
 
     let response: string = gateway_rpc_wait(tx, 2000)
     if strlen(response) == 0 {
-        return gateway_error(504, "the node did not acknowledge in 2000 ms")
+        return gateway_error(504, "the device did not acknowledge in 2000 ms")
     }
-    if !set_sampling_rate_response_valid(response) {
-        return gateway_error(502, "the node sent a malformed acknowledgement")
+    if !control_response_valid(response) {
+        return gateway_error(502, "the device sent a malformed acknowledgement")
     }
-    let acknowledgement: SetSamplingRateResponse = set_sampling_rate_response_unmarshal(response)
+    let acknowledgement: ControlResponse = control_response_unmarshal(response)
+    if acknowledgement.result != 0 {
+        return gateway_error(502, "the device refused the command")
+    }
     return json(200, "{\"success\":true,\"actual_interval_ms\":" +
-        int_to_str(u32(acknowledgement.actual_interval_ms)) + "}")
+        int_to_str(acknowledgement.argument) + "}")
+}
+
+// device_diagnostics asks one device to run its hardware smoke and records the
+// answer. The mask asks for every probe; a board answers for the ones it has,
+// and a probe it does not have is absent rather than failed. The answer is kept
+// with the device, so the listing carries the last smoke as well as the last
+// reading.
+fn device_diagnostics(req: Request) Response {
+    let area: u32 = int_from_str(param(req, "area"))
+    let node: u32 = int_from_str(param(req, "node"))
+    if area == 0 {
+        return gateway_error(400, "a device is an area and a node, and the area is required")
+    }
+    let key: u32 = device_key(area, node)
+
+    let tx: u32 = next_tx()
+    gateway_rpc_register(tx)
+
+    let device: DeviceId = DeviceId { u16(area), u16(node) }
+    let request: DiagRequest = DiagRequest { device, 255 }
+    let encoded: string = robohub_v1_frame(
+        MESSAGE_ID_DIAG_REQUEST, tx, diag_request_marshal(request))
+    if !gateway_serial_write(encoded) {
+        return gateway_error(503, "the serial link is unavailable")
+    }
+
+    let response: string = gateway_rpc_wait(tx, 2000)
+    if strlen(response) == 0 {
+        return gateway_error(504, "the device did not answer in 2000 ms")
+    }
+    if !diag_response_valid(response) {
+        return gateway_error(502, "the device sent a malformed diagnostic")
+    }
+
+    let diag: DiagResponse = diag_response_unmarshal(response)
+    let body: string = diag_json(diag)
+    gateway_state_set(device_suffix(key, ".diag"), body)
+    gateway_state_set_u32(device_suffix(key, ".diag_set"), 1)
+    return json(200, body)
+}
+
+// diag_json renders a diagnostic response as the REST shape.
+fn diag_json(diag: DiagResponse) string {
+    return "{\"area_id\":" + int_to_str(u32(diag.device.area_id)) +
+        ",\"node_id\":" + int_to_str(u32(diag.device.node_id)) +
+        ",\"uptime_ms\":" + int_to_str(diag.uptime_ms) +
+        ",\"events_published\":" + int_to_str(diag.events_published) +
+        ",\"handler_errors\":" + int_to_str(diag.handler_errors) +
+        ",\"tasks_run\":" + int_to_str(diag.tasks_run) +
+        ",\"task_errors\":" + int_to_str(diag.task_errors) +
+        ",\"last_error\":" + int_to_str(u32(diag.last_error)) +
+        ",\"probe_ok\":" + int_to_str(diag.probe_ok) +
+        ",\"probe_fault\":" + int_to_str(diag.probe_fault) + "}"
+}
+
+// device_sampling_rate changes one device's reporting interval. It is the same
+// control as the local endpoint — opcode 1 — addressed to a named device, so it
+// works for a board wired to this gateway and for one behind a relay: a device
+// in a child's area goes down that child's uplink, and the child answers.
+fn device_sampling_rate(req: Request) Response {
+    let area: u32 = int_from_str(param(req, "area"))
+    let node: u32 = int_from_str(param(req, "node"))
+    let interval: u32 = parse_interval_ms(request_body(req))
+    if area == 0 || interval == 0 {
+        return gateway_error(400, "an area, a node and a positive interval_ms are required")
+    }
+
+    let tx: u32 = next_tx()
+    let device: DeviceId = DeviceId { u16(area), u16(node) }
+    let control: ControlRequest = ControlRequest { device, u16(1), interval }
+    let encoded: string = robohub_v1_frame(
+        MESSAGE_ID_CONTROL_REQUEST, tx, control_request_marshal(control))
+
+    // A device in a child's area is behind a relay: the command goes down the
+    // uplink the child announced itself on. It is answered asynchronously — the
+    // child's reply arrives on the uplink and is applied when it is drained — so
+    // the request that routed it says so rather than waiting for a value it
+    // cannot see here.
+    let child: u32 = gateway_state_get_u32("area." + int_to_str(area))
+    if child != 0 {
+        if !gateway_uplink_send(device_area(child), device_node(child), encoded) {
+            return gateway_error(503, "the child that owns that area is not connected")
+        }
+        return json(202, "{\"success\":true,\"routed\":true,\"tx\":" + int_to_str(tx) + "}")
+    }
+
+    // A device on this gateway's own link is answered in the same request.
+    gateway_rpc_register(tx)
+    if !gateway_serial_write(encoded) {
+        return gateway_error(503, "the serial link is unavailable")
+    }
+
+    let response: string = gateway_rpc_wait(tx, 2000)
+    if strlen(response) == 0 {
+        return gateway_error(504, "the device did not acknowledge in 2000 ms")
+    }
+    if !control_response_valid(response) {
+        return gateway_error(502, "the device sent a malformed acknowledgement")
+    }
+    let acknowledgement: ControlResponse = control_response_unmarshal(response)
+    if acknowledgement.result != 0 {
+        return gateway_error(502, "the device refused the command")
+    }
+    return json(200, "{\"success\":true,\"actual_interval_ms\":" +
+        int_to_str(acknowledgement.argument) + "}")
 }
 
 // parse_interval_ms reads the number after "interval_ms" in a small JSON body,

@@ -1,0 +1,36 @@
+module link
+
+// L2 — the protocol between a board and the gateway it is wired to.
+//
+// The shared identity, the message numbering and the diagnostics and control
+// families are in `common.rho`; what is here is what is particular to a board's
+// side of its link: it announces itself (`HELLO`) and it sends readings
+// (`TELEMETRY`). A board generates this schema and the C it becomes.
+//
+// The frame around a payload is robohub-transport's, the same one an uplink
+// uses — a message is a message wherever it travels, and the level is which
+// schema names it.
+
+namespace robohub.v1
+
+include "common.rho"
+
+// What a device says about itself when it comes up, so a gateway knows it
+// without being configured with it.
+message Hello {
+    device: DeviceId
+    firmware_version: u16
+    platform: Platform
+    mode: Mode
+    capabilities: u16
+}
+
+// A reading, naming its device. The reading carries its own identity, so a
+// gateway that hears several boards — directly or through an edge — attributes
+// each without the link telling it.
+message Telemetry {
+    device: DeviceId
+    timestamp_ms: u32
+    temperature_c: f32
+    status: NodeStatus
+}

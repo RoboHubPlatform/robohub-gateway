@@ -12,8 +12,12 @@ module gateway
 // The host declarations, the generated protocol and transport, and the pieces
 // of the gateway. `include` keeps them in this module, so an extern's name is
 // the name the generated port implements and no call is qualified.
+//
+// The wire is generated from schemas/gateway.rho — both protocol levels in one
+// declaration, so a message means the same thing on a board's link (L2) and on
+// a gateway's uplink (L1).
 include "gateway/port.rho"
-include "gateway/protocol.rho"
+include "gateway/wire/protocol.rho"
 include "gateway/ingest.rho"
 include "gateway/stream.rho"
 include "gateway/state.rho"
@@ -22,7 +26,11 @@ import std.web.http
 
 route GET  "/api/v1/telemetry/temperature" => latest_temperature
 route GET  "/api/v1/nodes" => nodes
+route GET  "/api/v1/nodes/{area}/{node}/diagnostics" => device_diagnostics
+route POST "/api/v1/nodes/{area}/{node}/sampling-rate" => device_sampling_rate
+route GET  "/api/v1/diagnostics" => diagnostics
 route POST "/api/v1/telemetry/sampling-rate" => set_sampling_rate
+route POST "/api/v1/uplink/pump" => uplink_pump
 
 // A liveness probe is registered by the router port for every service, so this
 // module does not declare one; GET /healthz answers {"status":"ok"} already.
@@ -33,7 +41,16 @@ fn init() void {
     // REST_PORT is the gateway's name for the listener; let it stand in for the
     // generated service's RHO_HTTP_ADDR before the address is chosen.
     gateway_config()
-    print("robohub-gateway: starting\n")
+    print("robohub-gateway: starting as " + gateway_mode() +
+        " in area " + int_to_str(gateway_area()) + "\n")
+    // The uplink is where a relay dials in. A gateway with nothing above it —
+    // a master, or an edge wired to a host — names no port and listens on none.
+    let uplink: u32 = gateway_uplink_port()
+    if uplink != 0 {
+        if gateway_uplink_start(uplink) {
+            print("robohub-gateway: uplink listening on port " + int_to_str(uplink) + "\n")
+        }
+    }
 }
 
 // background runs on its own goroutine beside the HTTP listener. It owns the

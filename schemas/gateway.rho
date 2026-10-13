@@ -1,0 +1,16 @@
+module gateway.protocol
+
+// The gateway's whole wire: both levels in one schema.
+//
+// A gateway hears boards (L2) and speaks to its parent and its children (L1), so
+// it generates from a root that includes both. `common.rho` is reached through
+// either level and merged once, so the shared identity is one declaration and
+// the two levels cannot disagree about a device id.
+//
+// A node generates `link.rho` alone and a relay generates `uplink.rho` alone;
+// only a gateway needs both, and this is where it says so.
+
+namespace robohub.v1
+
+include "link.rho"
+include "uplink.rho"

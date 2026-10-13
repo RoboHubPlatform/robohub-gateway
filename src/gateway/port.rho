@@ -12,6 +12,22 @@ module gateway.port
 // so REST_PORT is the gateway's listener as a RoboHub deployment expects.
 extern fn gateway_config() void
 
+// mode is how this gateway is deployed — node, edge, relay or master — and area
+// is the area it speaks for. Both come from the deployment, so one binary is
+// each mode without a rebuild.
+extern fn gateway_mode() string
+extern fn gateway_area() u32
+
+// The uplink: the port a relay dials in on, whether a listener was opened, and
+// the next frame one of them sent. The frames are COBS, the same as a serial
+// link, so the generated codec decodes them.
+extern fn gateway_uplink_port() u32
+extern fn gateway_uplink_start(port: u32) bool
+extern fn gateway_uplink_next() string
+extern fn gateway_uplink_connection() u32
+extern fn gateway_uplink_bind(child_area: u32, child_link: u32, connection: u32) void
+extern fn gateway_uplink_send(child_area: u32, child_link: u32, frame: string) bool
+
 // serial_start asks for the link named by SERIAL_PORT, at SERIAL_BAUD.
 extern fn gateway_serial_start() bool
 
