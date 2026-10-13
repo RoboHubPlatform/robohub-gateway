@@ -1,0 +1,40 @@
+module uplink
+
+// L1 — the protocol between gateways.
+//
+// A relay or an edge connects to its parent and pushes upstream; the master is a
+// gateway with no parent. The framing is robohub-transport's, the same one L2
+// uses, because a frame is bytes on both. The shared identity, the numbering and
+// the diagnostics and control families are in `common.rho`; what is here is what
+// is particular to the gateway side: it announces itself and its area
+// (`ANNOUNCE`), and a reading is carried up (`READING`).
+//
+// One reading per frame rather than a batch: a Rho struct cannot hold an array
+// yet, and a relay that re-frames each reading it hears has nothing to batch.
+// Batching is a later decoration on the same messages, not a different shape.
+
+namespace robohub.v1
+
+include "common.rho"
+
+// What a gateway says to its parent when it connects: who it is, what it can do,
+// and the area it speaks for. The parent builds its child table from these, and
+// a command addressed to a device is forwarded to the child that claimed the
+// area.
+message Announce {
+    gateway: GatewayId
+    firmware_version: u16
+    mode: u16
+    capabilities: u16
+    area_id: u16
+}
+
+// One reading, carried up. A relay re-frames each L2 telemetry as one of these,
+// naming the device it came from, so the master keys its state by device id and
+// not by which link it arrived on.
+message Reading {
+    device: DeviceId
+    timestamp_ms: u32
+    temperature_c: f32
+    status: u16
+}

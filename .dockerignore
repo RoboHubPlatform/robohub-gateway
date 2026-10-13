@@ -1,0 +1,6 @@
+# What a build of the image does not need: what a build produced, and the
+# history a copied tree carries instead.
+build/
+bin/
+.git/
+.kilo/

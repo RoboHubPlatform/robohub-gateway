@@ -15,16 +15,19 @@ handler share.
 
 ## What it answers
 
-- `GET /api/v1/telemetry/temperature` — the latest reading, from whichever board
+- `GET /api/v1/telemetry/temperature` — the latest reading, from whichever device
   sent it last.
 
   ```json
-  { "node_id": 1, "temperature_c": 24.38, "status": "OK", "last_updated_ms": 186095 }
+  { "area_id": 7, "node_id": 1, "temperature_c": 24.38, "status": "OK", "last_updated_ms": 186095 }
   ```
 
-- `GET /api/v1/nodes` — every board a frame has come from, each with its newest
-  values. A reading names its board, so a gateway that hears several — directly
-  or through a repeater — attributes them without the link telling it.
+- `GET /api/v1/nodes` — every device a frame has come from, each with its newest
+  values. A reading names its own device — an area and a node — so two boards
+  numbered 2 in different areas are two devices.
+
+- `GET /api/v1/diagnostics` — what the gateway itself is doing: the mode it was
+  deployed in, the area it speaks for, its uptime and what it has carried.
 
 - `POST /api/v1/telemetry/sampling-rate` — an RPC that changes a node's
   reporting interval, answered `200` with the node's acknowledgement or `504`
@@ -36,10 +39,10 @@ handler share.
 ## What it emits
 
 Each valid telemetry frame becomes one newline-delimited JSON object on the UDP
-collector, naming the board it came from:
+collector, naming the device it came from:
 
 ```json
-{"node_id":1,"timestamp_ms":186095,"temperature_c":24.38,"status":0}
+{"area_id":7,"node_id":1,"timestamp_ms":186095,"temperature_c":24.38,"status":0}
 ```
 
 ## The wire
@@ -47,8 +50,9 @@ collector, naming the board it came from:
 A frame is robohub-transport's, the same one a C firmware node writes: a six-byte
 header (`msg_id`, `tx_id`, `payload_len`), the payload, and a Fletcher-16 check,
 COBS-encoded and closed with a `0x00` delimiter. The payloads and the framing in
-this gateway are generated from `schemas/telemetry.rho`, the same schema the
-board's C is generated from, so the two ends are one description.
+this gateway are generated from `schemas/gateway.rho`, which includes the same
+`common.rho` and `link.rho` a board's C is generated from, so the two ends are
+one description.
 
 ## A Pico as the gateway
 
@@ -66,3 +70,5 @@ when there is not.
 | `SERIAL_BAUD` | `115200` | the line speed |
 | `PLOTJUGGLER_ADDR` | `127.0.0.1:9870` | the UDP collector, `host:port` |
 | `REST_PORT` | `8080` | the REST listener, a port; `RHO_HTTP_ADDR` overrides it |
+| `GATEWAY_MODE` | `master` | `node`, `edge`, `relay` or `master` |
+| `GATEWAY_AREA` | `1` | the area this gateway speaks for |

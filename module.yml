@@ -66,3 +66,5 @@ docs:
   index: docs/index.md
   sources:
     - docs/index.md
+    - docs/architecture.md
+    - docs/deployment.md

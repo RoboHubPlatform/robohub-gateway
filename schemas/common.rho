@@ -1,0 +1,137 @@
+module common
+
+// The identity and the families both protocol levels share.
+//
+// A message means the same thing at either level, so what is common to L2
+// (board <-> gateway) and L1 (gateway <-> gateway) is written once, here, and
+// both levels include it. The alternative — the identity declared in each level
+// — is two definitions of one device id, and two definitions are two things to
+// keep in step.
+//
+// One `MessageId` numbers the whole wire. A value shared by two names is one
+// message with two names at the two levels: `HELLO` and `ANNOUNCE` are both
+// 0x0101, `TELEMETRY` and `READING` are both 0x0201. The aliases say so rather
+// than numbering the same thing twice.
+
+namespace robohub.v1
+
+// The transport header's msg_id. The values are decimal because a schema enum
+// takes a decimal literal; the hex each one stands for is in the comment.
+enum MessageId {
+    HELLO = 257                     // 0x0101, L2: a board announces itself
+    ANNOUNCE = 257                  // 0x0101, L1: a gateway announces itself
+    TELEMETRY = 513                 // 0x0201, L2: a board's reading
+    READING = 513                   // 0x0201, L1: a reading carried up
+    CONTROL_REQUEST = 769           // 0x0301
+    CONTROL_RESPONSE = 770          // 0x0302
+    DIAG_REQUEST = 1025             // 0x0401
+    DIAG_RESPONSE = 1026            // 0x0402
+}
+
+enum NodeStatus {
+    OK = 0
+    FAULT = 1
+}
+
+// What a device or a gateway can do, as a set of bits.
+enum Capability {
+    NONE = 0
+    SENSING = 1
+    GATEWAY = 2
+    DIAGNOSTICS = 4
+    UPLINK = 8
+}
+
+// Which stack a device runs, so a gateway can say what it is talking to.
+enum Platform {
+    UNKNOWN = 0
+    PICO = 1
+    ESP32 = 2
+    STM32 = 3
+    LINUX = 4
+    WINDOWS = 5
+}
+
+// How a device is used, matching the operating modes.
+enum Mode {
+    NODE = 0
+    EDGE = 1
+    RELAY = 2
+    MASTER = 3
+}
+
+// How one hardware probe came out. A probe listed in neither mask is absent.
+enum ProbeResult {
+    ABSENT = 0
+    OK = 1
+    FAULT = 2
+}
+
+// The probe set a smoke checks, one bit each. A platform answers for the probes
+// it has; the rest are absent rather than failed.
+enum ProbeId {
+    CONSOLE = 0
+    TIMER = 1
+    ONEWIRE = 2
+    I2C = 3
+    SPI = 4
+    GPIO = 5
+    UART = 6
+    NET = 7
+}
+
+// A device, unique across an area: the area a gateway owns, and the node within
+// it. `node_id` is what a board already sets; `area_id` is assigned by the
+// gateway, so two boards with the same node id in different areas are two
+// devices.
+message DeviceId {
+    area_id: u16
+    node_id: u16
+}
+
+// A gateway, unique across the whole tree: the area it owns and the gateways
+// that share it.
+message GatewayId {
+    area_id: u16
+    link_id: u16
+}
+
+// A diagnostic request: which probes to run, as a mask of ProbeId. A device and
+// a gateway answer the same request about themselves.
+message DiagRequest {
+    device: DeviceId
+    mask: u32
+}
+
+// A diagnostic response: the runtime's counters and the smoke's outcome.
+//
+// `probe_ok` and `probe_fault` are masks of ProbeId. A probe set in neither is
+// absent — the platform has no such device — which is a fact rather than a
+// failure, so absence is its own answer and not a fault.
+message DiagResponse {
+    device: DeviceId
+    uptime_ms: u32
+    events_published: u32
+    handler_errors: u32
+    tasks_run: u32
+    task_errors: u32
+    last_error: u16
+    probe_ok: u32
+    probe_fault: u32
+}
+
+// A control request is a command addressed to a device, with an opcode and one
+// argument. Sampling rate is opcode 1; the family is general so a new command
+// does not need a new message id.
+message ControlRequest {
+    device: DeviceId
+    opcode: u16
+    argument: u32
+}
+
+message ControlResponse {
+    device: DeviceId
+    opcode: u16
+    result: u16
+    argument: u32
+}
