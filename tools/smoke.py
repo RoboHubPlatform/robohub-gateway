@@ -100,6 +100,16 @@ def reading_payload(area: int, node: int, temp_c: float, status: int, ts_ms: int
     return b"\x01" + device(area, node) + struct.pack("<IfH", ts_ms, temp_c, status)
 
 
+def power_reading_frame(area: int, node: int, kind: int, status: int, valid: int,
+                        pv: float, load: float, grid: float, battery: float,
+                        soc: float, e_today: float, e_total: float, ts_ms: int) -> bytes:
+    # PowerReading: version, device, timestamp, kind, status, valid, then the
+    # seven figures — little-endian, the layout both ends generate.
+    payload = b"\x01" + device(area, node) + struct.pack(
+        "<IIHHfffffff", ts_ms, kind, status, valid, pv, load, grid, battery, soc, e_today, e_total)
+    return frame(0x0202, 0, payload)
+
+
 def parse_frame(raw: bytes):
     # raw is COBS-encoded without the delimiter; decode it.
     out = bytearray()
@@ -255,6 +265,55 @@ def main():
     if status != 200 or diagnostics.get("mode") != "master" or diagnostics.get("area_id") != AREA \
        or diagnostics.get("devices_seen") != 3:
         failures.append(f"diagnostics mismatch: {status} {body}")
+
+    # 2d. A power device — an inverter or a meter — sends a PowerReading, its own
+    # message. It becomes a device record with power and energy figures, the
+    # listing carries them, the power endpoint serves the latest, and the stream
+    # has a power record of its own shape.
+    udp.settimeout(0.5)
+    try:
+        while True:
+            udp.recv(4096)
+    except socket.timeout:
+        pass
+    udp.settimeout(3.0)
+
+    os.write(master, power_reading_frame(AREA, 10, 1, 0, 0x7F,
+                                         1200.5, 800.0, -350.25, 50.0, 85.0, 4.2, 1234.5, 130000))
+    try:
+        power_dgram = udp.recv(4096).decode()
+    except socket.timeout:
+        power_dgram = ""
+    print("UDP power:", power_dgram.strip())
+    try:
+        got_power = json.loads(power_dgram)
+    except Exception:
+        got_power = None
+    if not got_power or got_power.get("area_id") != AREA or got_power.get("node_id") != 10 or \
+       got_power.get("kind") != 1 or got_power.get("pv_power_w") != 1200.5 or \
+       got_power.get("battery_soc") != 85.0:
+        failures.append(f"power stream mismatch: {got_power!r}")
+
+    status, body = http("GET", "/api/v1/telemetry/power")
+    print("GET power:", status, body)
+    try:
+        latest_power = json.loads(body)
+    except Exception:
+        latest_power = {}
+    if status != 200 or latest_power.get("area_id") != AREA or latest_power.get("node_id") != 10 or \
+       latest_power.get("pv_power_w") != 1200.5 or latest_power.get("grid_power_w") != -350.25 or \
+       latest_power.get("energy_total_kwh") != 1234.5:
+        failures.append(f"power GET mismatch: {status} {body}")
+
+    status, body = http("GET", "/api/v1/nodes")
+    print("NODES with power:", status, body)
+    try:
+        listed = {(n["area_id"], n["node_id"]): n for n in json.loads(body)}
+    except Exception:
+        listed = {}
+    if listed.get((AREA, 10), {}).get("kind") != 1 or \
+       listed.get((AREA, 10), {}).get("pv_power_w") != 1200.5:
+        failures.append(f"the power device is missing from the listing: {body}")
 
     # 3. Control: POST sampling-rate, answer the gateway's 0x0301 with a 0x0302.
     import threading

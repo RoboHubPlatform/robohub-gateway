@@ -25,6 +25,7 @@ include "gateway/state.rho"
 import std.web.http
 
 route GET  "/api/v1/telemetry/temperature" => latest_temperature
+route GET  "/api/v1/telemetry/power" => latest_power
 route GET  "/api/v1/nodes" => nodes
 route GET  "/api/v1/nodes/{area}/{node}/diagnostics" => device_diagnostics
 route POST "/api/v1/nodes/{area}/{node}/sampling-rate" => device_sampling_rate

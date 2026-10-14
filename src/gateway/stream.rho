@@ -89,3 +89,61 @@ fn stream_publish(key: u32, timestamp: u32, temperature: f32, status: u32) bool 
         ",\"status\":" + int_to_str(status) + "}\n"
     return gateway_udp_send(line)
 }
+
+// handle_power_reading is a power device's reading, at either level: one message
+// id and one set of fields, so a Growatt's Modbus figures and a Hoymiles's HTTP
+// figures become the same device record.
+fn handle_power_reading(payload: string) void {
+    if !power_reading_valid(payload) {
+        return
+    }
+    let message: PowerReading = power_reading_unmarshal(payload)
+    record_power(message)
+}
+
+// record_power stores one power device's figures under its key and streams them.
+// `has_power` marks the record as a power device, so the listing knows to render
+// power fields rather than a temperature.
+fn record_power(message: PowerReading) void {
+    let key: u32 = device_key(u32(message.device.area_id), u32(message.device.node_id))
+
+    gateway_node_seen(key)
+    gateway_state_set_u32(device_suffix(key, ".has_power"), 1)
+    gateway_state_set_u32(device_suffix(key, ".kind"), message.kind)
+    gateway_state_set_u32(device_suffix(key, ".status"), u32(message.status))
+    gateway_state_set_u32(device_suffix(key, ".valid"), u32(message.valid))
+    gateway_state_set_f32(device_suffix(key, ".pv_power_w"), message.pv_power_w)
+    gateway_state_set_f32(device_suffix(key, ".load_power_w"), message.load_power_w)
+    gateway_state_set_f32(device_suffix(key, ".grid_power_w"), message.grid_power_w)
+    gateway_state_set_f32(device_suffix(key, ".battery_power_w"), message.battery_power_w)
+    gateway_state_set_f32(device_suffix(key, ".battery_soc"), message.battery_soc)
+    gateway_state_set_f32(device_suffix(key, ".energy_today_kwh"), message.energy_today_kwh)
+    gateway_state_set_f32(device_suffix(key, ".energy_total_kwh"), message.energy_total_kwh)
+    gateway_state_set_u32(device_suffix(key, ".last_updated_ms"), message.timestamp_ms)
+
+    // The newest power reading, whichever device sent it, for the single power
+    // endpoint — kept apart from `latest_device`, which a sensor may have set.
+    gateway_state_set_u32("latest_power_device", key)
+    gateway_state_set_u32("frames", gateway_state_get_u32("frames") + 1)
+
+    stream_publish_power(key, message)
+}
+
+// stream_publish_power renders one PlotJuggler record for a power device. It is
+// its own record shape because the fields are its own; a plot selects the ones
+// it wants by name.
+fn stream_publish_power(key: u32, message: PowerReading) bool {
+    let line: string = "{\"area_id\":" + int_to_str(device_area(key)) +
+        ",\"node_id\":" + int_to_str(device_node(key)) +
+        ",\"kind\":" + int_to_str(message.kind) +
+        ",\"timestamp_ms\":" + int_to_str(message.timestamp_ms) +
+        ",\"pv_power_w\":" + gateway_f32_str(message.pv_power_w) +
+        ",\"load_power_w\":" + gateway_f32_str(message.load_power_w) +
+        ",\"grid_power_w\":" + gateway_f32_str(message.grid_power_w) +
+        ",\"battery_power_w\":" + gateway_f32_str(message.battery_power_w) +
+        ",\"battery_soc\":" + gateway_f32_str(message.battery_soc) +
+        ",\"energy_today_kwh\":" + gateway_f32_str(message.energy_today_kwh) +
+        ",\"energy_total_kwh\":" + gateway_f32_str(message.energy_total_kwh) +
+        ",\"status\":" + int_to_str(u32(message.status)) + "}\n"
+    return gateway_udp_send(line)
+}

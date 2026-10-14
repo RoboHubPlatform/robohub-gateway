@@ -15,9 +15,16 @@ fn ingest_frame(encoded: string) void {
     }
 
     // tx_id 0 is unsolicited, so it is telemetry and no one is waiting for it.
+    // A sensor sends `Telemetry`, a power device sends `PowerReading`; both are
+    // measurements and both name their device, so the level and the message are
+    // what tell them apart and neither is told which link it arrived on.
     if frame.tx_id == 0 {
         if frame.msg_id == MESSAGE_ID_TELEMETRY {
             handle_telemetry(frame.payload)
+            return
+        }
+        if frame.msg_id == MESSAGE_ID_POWER_READING {
+            handle_power_reading(frame.payload)
         }
         return
     }
