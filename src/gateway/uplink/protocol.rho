@@ -50,6 +50,7 @@ const MESSAGE_ID_HELLO: u32 = 257
 const MESSAGE_ID_ANNOUNCE: u32 = 257
 const MESSAGE_ID_TELEMETRY: u32 = 513
 const MESSAGE_ID_READING: u32 = 513
+const MESSAGE_ID_POWER_READING: u32 = 514
 const MESSAGE_ID_CONTROL_REQUEST: u32 = 769
 const MESSAGE_ID_CONTROL_RESPONSE: u32 = 770
 const MESSAGE_ID_DIAG_REQUEST: u32 = 1025
@@ -94,6 +95,23 @@ const PROBE_ID_SPI: u32 = 4
 const PROBE_ID_GPIO: u32 = 5
 const PROBE_ID_UART: u32 = 6
 const PROBE_ID_NET: u32 = 7
+
+// DeviceKind values.
+const DEVICE_KIND_UNKNOWN: u32 = 0
+const DEVICE_KIND_INVERTER: u32 = 1
+const DEVICE_KIND_METER: u32 = 2
+const DEVICE_KIND_SENSOR: u32 = 3
+const DEVICE_KIND_GATEWAY: u32 = 4
+const DEVICE_KIND_BATTERY: u32 = 5
+
+// PowerField values.
+const POWER_FIELD_PV_POWER: u32 = 1
+const POWER_FIELD_LOAD_POWER: u32 = 2
+const POWER_FIELD_GRID_POWER: u32 = 4
+const POWER_FIELD_BATTERY_POWER: u32 = 8
+const POWER_FIELD_BATTERY_SOC: u32 = 16
+const POWER_FIELD_ENERGY_TODAY: u32 = 32
+const POWER_FIELD_ENERGY_TOTAL: u32 = 64
 
 // GatewayId is GatewayId on the wire, the version byte included.
 struct GatewayId {
@@ -401,6 +419,77 @@ fn control_response_unmarshal(data: string) ControlResponse {
     off = off + 2
     let argument: u32 = robohub_v1_get_u32(data, off)
     return ControlResponse { device, opcode, result, argument }
+}
+
+// PowerReading is PowerReading on the wire, the version byte included.
+struct PowerReading {
+    device: DeviceId
+    timestamp_ms: u32
+    kind: u32
+    status: u16
+    valid: u16
+    pv_power_w: f32
+    load_power_w: f32
+    grid_power_w: f32
+    battery_power_w: f32
+    battery_soc: f32
+    energy_today_kwh: f32
+    energy_total_kwh: f32
+}
+
+// power_reading_valid reports whether a payload is a whole PowerReading of this version.
+fn power_reading_valid(data: string) bool {
+    if strlen(data) < 46 {
+        return false
+    }
+    return u32(str_at(data, 0)) == 1
+}
+
+// power_reading_marshal writes a PowerReading: the version byte and its fields.
+fn power_reading_marshal(value: PowerReading) string {
+    var out: string = str_from_byte(u8(1))
+    out = out + device_id_marshal(value.device)
+    out = out + robohub_v1_put_u32(value.timestamp_ms)
+    out = out + robohub_v1_put_u32(value.kind)
+    out = out + robohub_v1_put_u16(value.status)
+    out = out + robohub_v1_put_u16(value.valid)
+    out = out + robohub_v1_put_f32(value.pv_power_w)
+    out = out + robohub_v1_put_f32(value.load_power_w)
+    out = out + robohub_v1_put_f32(value.grid_power_w)
+    out = out + robohub_v1_put_f32(value.battery_power_w)
+    out = out + robohub_v1_put_f32(value.battery_soc)
+    out = out + robohub_v1_put_f32(value.energy_today_kwh)
+    out = out + robohub_v1_put_f32(value.energy_total_kwh)
+    return out
+}
+
+// power_reading_unmarshal reads a payload this schema's power_reading_valid accepted.
+fn power_reading_unmarshal(data: string) PowerReading {
+    var off: u32 = 1
+    let device: DeviceId = device_id_unmarshal(str_slice(data, off, 5))
+    off = off + 5
+    let timestamp_ms: u32 = robohub_v1_get_u32(data, off)
+    off = off + 4
+    let kind: u32 = robohub_v1_get_u32(data, off)
+    off = off + 4
+    let status: u16 = robohub_v1_get_u16(data, off)
+    off = off + 2
+    let valid: u16 = robohub_v1_get_u16(data, off)
+    off = off + 2
+    let pv_power_w: f32 = robohub_v1_get_f32(data, off)
+    off = off + 4
+    let load_power_w: f32 = robohub_v1_get_f32(data, off)
+    off = off + 4
+    let grid_power_w: f32 = robohub_v1_get_f32(data, off)
+    off = off + 4
+    let battery_power_w: f32 = robohub_v1_get_f32(data, off)
+    off = off + 4
+    let battery_soc: f32 = robohub_v1_get_f32(data, off)
+    off = off + 4
+    let energy_today_kwh: f32 = robohub_v1_get_f32(data, off)
+    off = off + 4
+    let energy_total_kwh: f32 = robohub_v1_get_f32(data, off)
+    return PowerReading { device, timestamp_ms, kind, status, valid, pv_power_w, load_power_w, grid_power_w, battery_power_w, battery_soc, energy_today_kwh, energy_total_kwh }
 }
 
 // TransportFrame is one decoded frame: the header, and the payload the

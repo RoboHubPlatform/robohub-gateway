@@ -22,6 +22,7 @@ enum MessageId {
     ANNOUNCE = 257                  // 0x0101, L1: a gateway announces itself
     TELEMETRY = 513                 // 0x0201, L2: a board's reading
     READING = 513                   // 0x0201, L1: a reading carried up
+    POWER_READING = 514             // 0x0202, both levels: a power device's reading
     CONTROL_REQUEST = 769           // 0x0301
     CONTROL_RESPONSE = 770          // 0x0302
     DIAG_REQUEST = 1025             // 0x0401
@@ -80,6 +81,30 @@ enum ProbeId {
     NET = 7
 }
 
+// What kind of device a reading is of. A gateway lists devices by kind, so an
+// inverter and a meter are told apart without the part number being known.
+enum DeviceKind {
+    UNKNOWN = 0
+    INVERTER = 1
+    METER = 2
+    SENSOR = 3
+    GATEWAY = 4
+    BATTERY = 5
+}
+
+// Which figures a power reading carries, one bit each. A bit that is clear means
+// the device has no such figure, which is not the same as reporting zero: an
+// inverter generates nothing at night, but a microinverter has no battery at all.
+enum PowerField {
+    PV_POWER = 1
+    LOAD_POWER = 2
+    GRID_POWER = 4
+    BATTERY_POWER = 8
+    BATTERY_SOC = 16
+    ENERGY_TODAY = 32
+    ENERGY_TOTAL = 64
+}
+
 // A device, unique across an area: the area a gateway owns, and the node within
 // it. `node_id` is what a board already sets; `area_id` is assigned by the
 // gateway, so two boards with the same node id in different areas are two
@@ -134,4 +159,33 @@ message ControlResponse {
     opcode: u16
     result: u16
     argument: u32
+}
+
+// One device's power and energy at one moment, at either level.
+//
+// This is the measurement a power device sends — an inverter, a meter — as
+// `Telemetry` is the measurement a sensor sends. It is a message of its own
+// rather than more fields on `Telemetry` because the two are different
+// statements: a sensor reports one figure, a power device reports a set of them
+// and which of the set it has (`valid`, a mask of `PowerField`). A relay carries
+// one up exactly as it carries a `Reading`, by re-framing it unchanged, because
+// the level is which schema names a message and not what its fields mean.
+//
+// Sign conventions, so a consumer need not know the part: `grid_power_w` is
+// positive importing and negative exporting, and `battery_power_w` is positive
+// charging and negative discharging. `pv_power_w` and `load_power_w` are
+// non-negative. A field whose bit is clear in `valid` is absent and is not read.
+message PowerReading {
+    device: DeviceId
+    timestamp_ms: u32
+    kind: DeviceKind
+    status: u16
+    valid: u16
+    pv_power_w: f32
+    load_power_w: f32
+    grid_power_w: f32
+    battery_power_w: f32
+    battery_soc: f32
+    energy_today_kwh: f32
+    energy_total_kwh: f32
 }

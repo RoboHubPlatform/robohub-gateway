@@ -60,6 +60,13 @@ fn apply_uplink_frame(encoded: string) void {
         return
     }
 
+    // A power reading carried up is the same message a power device sends
+    // directly, so a relay re-frames it and the master records it identically.
+    if frame.msg_id == MESSAGE_ID_POWER_READING {
+        handle_power_reading(frame.payload)
+        return
+    }
+
     // A response from a child — to a command this gateway routed down — wakes
     // the handler waiting on that transaction, exactly as one from the local
     // link does.
@@ -130,19 +137,52 @@ fn nodes(req: Request) Response {
 
 // node_reading is one device's newest values, as the listing renders it. A
 // device whose smoke has been run carries its last diagnostic too, so a listing
-// says both what it last read and whether it is well.
+// says both what it last read and whether it is well. A power device carries its
+// power and energy figures instead of a spot temperature.
 fn node_reading(key: u32) string {
-    let base: string = "{\"area_id\":" + int_to_str(device_area(key)) +
+    var body: string = "{\"area_id\":" + int_to_str(device_area(key)) +
         ",\"node_id\":" + int_to_str(device_node(key)) +
         ",\"temperature_c\":" + gateway_f32_str(gateway_state_get_f32(device_suffix(key, ".temperature_c"))) +
         ",\"status\":\"" + status_text(gateway_state_get_u32(device_suffix(key, ".status"))) +
         "\",\"last_updated_ms\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".last_updated_ms")))
-    if gateway_state_get_u32(device_suffix(key, ".diag_set")) == 0 {
-        return base + "}"
+
+    if gateway_state_get_u32(device_suffix(key, ".has_power")) != 0 {
+        body = body + power_json(key)
     }
+
     // Splice the stored diagnostic in before the closing brace, rather than
     // keeping it apart: a device is one record, and a reader wants one.
-    return base + ",\"diag\":" + gateway_state_get(device_suffix(key, ".diag")) + "}"
+    if gateway_state_get_u32(device_suffix(key, ".diag_set")) != 0 {
+        body = body + ",\"diag\":" + gateway_state_get(device_suffix(key, ".diag"))
+    }
+    return body + "}"
+}
+
+// power_json renders a power device's stored figures, as the trailing fields of
+// its record. It starts with a comma, because it is always appended to a record
+// that already has the identity and the timestamp.
+fn power_json(key: u32) string {
+    return ",\"kind\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".kind"))) +
+        ",\"valid\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".valid"))) +
+        ",\"pv_power_w\":" + gateway_f32_str(gateway_state_get_f32(device_suffix(key, ".pv_power_w"))) +
+        ",\"load_power_w\":" + gateway_f32_str(gateway_state_get_f32(device_suffix(key, ".load_power_w"))) +
+        ",\"grid_power_w\":" + gateway_f32_str(gateway_state_get_f32(device_suffix(key, ".grid_power_w"))) +
+        ",\"battery_power_w\":" + gateway_f32_str(gateway_state_get_f32(device_suffix(key, ".battery_power_w"))) +
+        ",\"battery_soc\":" + gateway_f32_str(gateway_state_get_f32(device_suffix(key, ".battery_soc"))) +
+        ",\"energy_today_kwh\":" + gateway_f32_str(gateway_state_get_f32(device_suffix(key, ".energy_today_kwh"))) +
+        ",\"energy_total_kwh\":" + gateway_f32_str(gateway_state_get_f32(device_suffix(key, ".energy_total_kwh")))
+}
+
+// latest_power serves the newest power reading, from whichever device sent it
+// last, or a zero reading before any has arrived.
+fn latest_power(req: Request) Response {
+    drain_uplink()
+    let key: u32 = gateway_state_get_u32("latest_power_device")
+    let body: string = "{\"area_id\":" + int_to_str(device_area(key)) +
+        ",\"node_id\":" + int_to_str(device_node(key)) +
+        ",\"status\":\"" + status_text(gateway_state_get_u32(device_suffix(key, ".status"))) +
+        "\",\"last_updated_ms\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".last_updated_ms")))
+    return json(200, body + power_json(key) + "}")
 }
 
 // diagnostics says what the gateway itself is doing: the mode it was deployed
