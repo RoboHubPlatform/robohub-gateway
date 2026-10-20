@@ -327,3 +327,27 @@ docker build -f deploy/Dockerfile --build-context rho=/path/to/rho -t <user>/rob
 [docs/deployment.md](docs/deployment.md) covers the modes, the second (uplink)
 port that is not HTTP, running a gateway with a board wired to it, and verifying
 a deployment.
+
+## Deploying to a board
+
+The gateway is a host program, so it is deployed to a board that runs an
+operating system rather than flashed. The `Dockerfile` beside this file builds
+it as a container, and a target's `deploy` block says where the board is:
+
+```sh
+# Build the server, then carry it to the UNO Q and start it as a container:
+rho build .
+rho deploy -target uno-q -docker -run build/robohub-gateway
+
+# Or as a plain program, copied over SSH and started:
+rho deploy -target uno-q -run build/robohub-gateway
+```
+
+The image name, tag, Dockerfile and run arguments come from the board's
+`deploy.docker` block and can be overridden per machine — `RH_DEPLOY_HOST`,
+`RH_DEPLOY_USER`, `RH_DEPLOY_PATH`, `RH_DEPLOY_DOCKER_IMAGE`,
+`RH_DEPLOY_DOCKER_RUN` (and the rest). `rho deploy -n` prints the steps and runs
+nothing, which is what to check before the board is on the bench.
+
+A gateway that reads a board's serial link in a container needs the device:
+`RH_DEPLOY_DOCKER_RUN='--net host --device /dev/ttyUSB0 -p 8080:8080 {image}'`.
