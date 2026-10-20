@@ -110,6 +110,15 @@ def power_reading_frame(area: int, node: int, kind: int, status: int, valid: int
     return frame(0x0202, 0, payload)
 
 
+def state_reading_frame(area: int, node: int, kind: int, status: int, valid: int,
+                        switch_state: int, setpoint: float, ts_ms: int) -> bytes:
+    # StateReading: version, device, timestamp, kind, status, valid, switch state,
+    # setpoint.
+    payload = b"\x01" + device(area, node) + struct.pack(
+        "<IIHHHf", ts_ms, kind, status, valid, switch_state, setpoint)
+    return frame(0x0203, 0, payload)
+
+
 def parse_frame(raw: bytes):
     # raw is COBS-encoded without the delimiter; decode it.
     out = bytearray()
@@ -315,6 +324,48 @@ def main():
        listed.get((AREA, 10), {}).get("pv_power_w") != 1200.5:
         failures.append(f"the power device is missing from the listing: {body}")
 
+    # 2e. A device's state — a switch's on/off — is its own reading, and a device
+    # that is only a switch carries its kind and state and no power.
+    udp.settimeout(0.5)
+    try:
+        while True:
+            udp.recv(4096)
+    except socket.timeout:
+        pass
+    udp.settimeout(3.0)
+
+    os.write(master, state_reading_frame(AREA, 12, 6, 0, 1, 1, 0.0, 140000))
+    try:
+        state_dgram = udp.recv(4096).decode()
+    except socket.timeout:
+        state_dgram = ""
+    print("UDP state:", state_dgram.strip())
+    try:
+        got_state = json.loads(state_dgram)
+    except Exception:
+        got_state = None
+    if not got_state or got_state.get("area_id") != AREA or got_state.get("node_id") != 12 or \
+       got_state.get("kind") != 6 or got_state.get("switch_state") != 1:
+        failures.append(f"state stream mismatch: {got_state!r}")
+
+    status, body = http("GET", "/api/v1/telemetry/state")
+    print("GET state:", status, body)
+    try:
+        latest_state = json.loads(body)
+    except Exception:
+        latest_state = {}
+    if status != 200 or latest_state.get("kind") != 6 or latest_state.get("switch_state") != 1:
+        failures.append(f"state GET mismatch: {status} {body}")
+
+    status, body = http("GET", "/api/v1/nodes")
+    try:
+        listed = {(n["area_id"], n["node_id"]): n for n in json.loads(body)}
+    except Exception:
+        listed = {}
+    if listed.get((AREA, 12), {}).get("switch_state") != 1 or \
+       listed.get((AREA, 12), {}).get("kind") != 6:
+        failures.append(f"the switch is missing from the listing: {body}")
+
     # 3. Control: POST sampling-rate, answer the gateway's 0x0301 with a 0x0302.
     import threading
 
@@ -344,8 +395,35 @@ def main():
         rpc = json.loads(body)
     except Exception:
         rpc = {}
-    if status != 200 or rpc.get("success") is not True or rpc.get("actual_interval_ms") != 240:
+    if status != 200 or rpc.get("success") is not True or rpc.get("actual") != 240:
         failures.append(f"POST mismatch: {status} {body}")
+
+    # 3b. A switch is driven by the same control family: the switch endpoint sends
+    # opcode 2 with the state as the argument, and the device acknowledges.
+    def switch_responder():
+        try:
+            raw = read_frame(master)
+            msg_id, tx_id, payload = parse_frame(raw)
+            area, node = struct.unpack("<HH", payload[2:6])
+            opcode, argument = struct.unpack("<HI", payload[6:12])
+            print(f"node saw switch msg=0x{msg_id:04x} opcode={opcode} arg={argument}")
+            if msg_id != 0x0301 or opcode != 2 or argument != 1 or (area, node) != (AREA, 12):
+                failures.append(f"unexpected switch control {msg_id} {payload.hex()}")
+            os.write(master, frame(0x0302, tx_id, control_response(area, node, opcode, 0, argument)))
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"switch responder: {exc}")
+
+    t = threading.Thread(target=switch_responder)
+    t.start()
+    status, body = http("POST", f"/api/v1/nodes/{AREA}/12/switch", json.dumps({"on": True}))
+    t.join(timeout=5)
+    print("SWITCH:", status, body)
+    try:
+        switch = json.loads(body)
+    except Exception:
+        switch = {}
+    if status != 200 or switch.get("opcode") != 2 or switch.get("actual") != 1:
+        failures.append(f"switch mismatch: {status} {body}")
 
     # 4. Timeout path: a request the node never answers is a 504. The request is
     # read and left unanswered, so the pty is clean for the next exchange.

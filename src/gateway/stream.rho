@@ -147,3 +147,47 @@ fn stream_publish_power(key: u32, message: PowerReading) bool {
         ",\"status\":" + int_to_str(u32(message.status)) + "}\n"
     return gateway_udp_send(line)
 }
+
+// handle_state_reading is a device's state — a switch's on/off, an actuator's
+// setpoint — at either level. It becomes the device's newest state, apart from
+// its measurements because it is a different statement: what the device is,
+// rather than what it reads.
+fn handle_state_reading(payload: string) void {
+    if !state_reading_valid(payload) {
+        return
+    }
+    let message: StateReading = state_reading_unmarshal(payload)
+    record_state(message)
+}
+
+// record_state stores a device's state under its key and streams it.
+fn record_state(message: StateReading) void {
+    let key: u32 = device_key(u32(message.device.area_id), u32(message.device.node_id))
+
+    gateway_node_seen(key)
+    gateway_state_set_u32(device_suffix(key, ".has_state"), 1)
+    gateway_state_set_u32(device_suffix(key, ".kind"), message.kind)
+    gateway_state_set_u32(device_suffix(key, ".status"), u32(message.status))
+    gateway_state_set_u32(device_suffix(key, ".valid"), u32(message.valid))
+    gateway_state_set_u32(device_suffix(key, ".switch_state"), u32(message.switch_state))
+    gateway_state_set_f32(device_suffix(key, ".setpoint"), message.setpoint)
+    gateway_state_set_u32(device_suffix(key, ".last_updated_ms"), message.timestamp_ms)
+
+    gateway_state_set_u32("latest_state_device", key)
+    gateway_state_set_u32("frames", gateway_state_get_u32("frames") + 1)
+
+    stream_publish_state(key, message)
+}
+
+// stream_publish_state renders one PlotJuggler record for a device's state.
+fn stream_publish_state(key: u32, message: StateReading) bool {
+    let line: string = "{\"area_id\":" + int_to_str(device_area(key)) +
+        ",\"node_id\":" + int_to_str(device_node(key)) +
+        ",\"kind\":" + int_to_str(message.kind) +
+        ",\"timestamp_ms\":" + int_to_str(message.timestamp_ms) +
+        ",\"valid\":" + int_to_str(u32(message.valid)) +
+        ",\"switch_state\":" + int_to_str(u32(message.switch_state)) +
+        ",\"setpoint\":" + gateway_f32_str(message.setpoint) +
+        ",\"status\":" + int_to_str(u32(message.status)) + "}\n"
+    return gateway_udp_send(line)
+}

@@ -23,6 +23,7 @@ enum MessageId {
     TELEMETRY = 513                 // 0x0201, L2: a board's reading
     READING = 513                   // 0x0201, L1: a reading carried up
     POWER_READING = 514             // 0x0202, both levels: a power device's reading
+    STATE_READING = 515             // 0x0203, both levels: a device's state
     CONTROL_REQUEST = 769           // 0x0301
     CONTROL_RESPONSE = 770          // 0x0302
     DIAG_REQUEST = 1025             // 0x0401
@@ -90,6 +91,26 @@ enum DeviceKind {
     SENSOR = 3
     GATEWAY = 4
     BATTERY = 5
+    SWITCH = 6
+    ACTUATOR = 7
+}
+
+// Which figures a state reading carries, one bit each. The same idea as
+// PowerField: a bit that is clear means the device has no such state.
+enum StateField {
+    SWITCH_STATE = 1
+    SETPOINT = 2
+}
+
+// The commands a device may be sent: the control family is an opcode and an
+// argument, and this is the vocabulary both ends share. Opcodes 1..255 are the
+// ecosystem's; a device's own begin at 256 (VENDOR_BASE) so a custom command
+// cannot collide with one the core knows.
+enum ControlOpcode {
+    SET_SAMPLING_RATE = 1
+    SET_SWITCH = 2
+    SET_SETPOINT = 3
+    VENDOR_BASE = 256
 }
 
 // Which figures a power reading carries, one bit each. A bit that is clear means
@@ -188,4 +209,25 @@ message PowerReading {
     battery_soc: f32
     energy_today_kwh: f32
     energy_total_kwh: f32
+}
+
+// A device's state: what it is, as opposed to what it measures. A switch's
+// on/off, an actuator's setpoint. A program reads a temperature or a power with
+// Telemetry or PowerReading; it reads what a controllable device *is* with this,
+// and commands it with a ControlRequest carrying a ControlOpcode.
+//
+// State and measurement are apart on purpose: an inverter measures power and has
+// no state to command; a relay has a state and measures nothing; a smart plug has
+// both, and reports them in the message each belongs to. `valid` is a mask of
+// StateField, so an actuator's reading and a switch's are the same shape.
+//
+// `switch_state` is 0 or 1; `setpoint` is the actuator's value in its own units.
+message StateReading {
+    device: DeviceId
+    timestamp_ms: u32
+    kind: DeviceKind
+    status: u16
+    valid: u16
+    switch_state: u16
+    setpoint: f32
 }

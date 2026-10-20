@@ -67,6 +67,11 @@ fn apply_uplink_frame(encoded: string) void {
         return
     }
 
+    if frame.msg_id == MESSAGE_ID_STATE_READING {
+        handle_state_reading(frame.payload)
+        return
+    }
+
     // A response from a child — to a command this gateway routed down — wakes
     // the handler waiting on that transaction, exactly as one from the local
     // link does.
@@ -150,12 +155,30 @@ fn node_reading(key: u32) string {
         body = body + power_json(key)
     }
 
+    // A device's state (a switch, an actuator) is rendered beside its figures.
+    // `kind` and `valid` belong to the device, so they are written once — with
+    // the power figures when there are any, and here when state is all there is.
+    if gateway_state_get_u32(device_suffix(key, ".has_state")) != 0 {
+        if gateway_state_get_u32(device_suffix(key, ".has_power")) == 0 {
+            body = body + ",\"kind\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".kind"))) +
+                ",\"valid\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".valid")))
+        }
+        body = body + state_json(key)
+    }
+
     // Splice the stored diagnostic in before the closing brace, rather than
     // keeping it apart: a device is one record, and a reader wants one.
     if gateway_state_get_u32(device_suffix(key, ".diag_set")) != 0 {
         body = body + ",\"diag\":" + gateway_state_get(device_suffix(key, ".diag"))
     }
     return body + "}"
+}
+
+// state_json renders a device's stored state, as the trailing fields of its
+// record. It starts with a comma, because it is always appended.
+fn state_json(key: u32) string {
+    return ",\"switch_state\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".switch_state"))) +
+        ",\"setpoint\":" + gateway_f32_str(gateway_state_get_f32(device_suffix(key, ".setpoint")))
 }
 
 // power_json renders a power device's stored figures, as the trailing fields of
@@ -183,6 +206,20 @@ fn latest_power(req: Request) Response {
         ",\"status\":\"" + status_text(gateway_state_get_u32(device_suffix(key, ".status"))) +
         "\",\"last_updated_ms\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".last_updated_ms")))
     return json(200, body + power_json(key) + "}")
+}
+
+// latest_state serves the newest device state, from whichever device sent it
+// last, or a zero state before any has arrived.
+fn latest_state(req: Request) Response {
+    drain_uplink()
+    let key: u32 = gateway_state_get_u32("latest_state_device")
+    let body: string = "{\"area_id\":" + int_to_str(device_area(key)) +
+        ",\"node_id\":" + int_to_str(device_node(key)) +
+        ",\"kind\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".kind"))) +
+        ",\"status\":\"" + status_text(gateway_state_get_u32(device_suffix(key, ".status"))) +
+        "\",\"last_updated_ms\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".last_updated_ms"))) +
+        ",\"valid\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".valid")))
+    return json(200, body + state_json(key) + "}")
 }
 
 // diagnostics says what the gateway itself is doing: the mode it was deployed
@@ -214,31 +251,7 @@ fn set_sampling_rate(req: Request) Response {
     if key == 0 {
         return gateway_error(503, "no device has been heard from yet")
     }
-
-    let tx: u32 = next_tx()
-    gateway_rpc_register(tx)
-
-    let device: DeviceId = DeviceId { u16(device_area(key)), u16(device_node(key)) }
-    let request: ControlRequest = ControlRequest { device, u16(1), interval }
-    let encoded: string = robohub_v1_frame(
-        MESSAGE_ID_CONTROL_REQUEST, tx, control_request_marshal(request))
-    if !gateway_serial_write(encoded) {
-        return gateway_error(503, "the serial link is unavailable")
-    }
-
-    let response: string = gateway_rpc_wait(tx, 2000)
-    if strlen(response) == 0 {
-        return gateway_error(504, "the device did not acknowledge in 2000 ms")
-    }
-    if !control_response_valid(response) {
-        return gateway_error(502, "the device sent a malformed acknowledgement")
-    }
-    let acknowledgement: ControlResponse = control_response_unmarshal(response)
-    if acknowledgement.result != 0 {
-        return gateway_error(502, "the device refused the command")
-    }
-    return json(200, "{\"success\":true,\"actual_interval_ms\":" +
-        int_to_str(acknowledgement.argument) + "}")
+    return route_control(device_area(key), device_node(key), u16(CONTROL_OPCODE_SET_SAMPLING_RATE), interval)
 }
 
 // device_diagnostics asks one device to run its hardware smoke and records the
@@ -294,29 +307,19 @@ fn diag_json(diag: DiagResponse) string {
         ",\"probe_fault\":" + int_to_str(diag.probe_fault) + "}"
 }
 
-// device_sampling_rate changes one device's reporting interval. It is the same
-// control as the local endpoint — opcode 1 — addressed to a named device, so it
-// works for a board wired to this gateway and for one behind a relay: a device
-// in a child's area goes down that child's uplink, and the child answers.
-fn device_sampling_rate(req: Request) Response {
-    let area: u32 = int_from_str(param(req, "area"))
-    let node: u32 = int_from_str(param(req, "node"))
-    let interval: u32 = parse_interval_ms(request_body(req))
-    if area == 0 || interval == 0 {
-        return gateway_error(400, "an area, a node and a positive interval_ms are required")
-    }
-
+// route_control sends one command to one device and answers with what it did.
+//
+// The control family is an opcode and an argument, so every command routes the
+// same way: a device in a child's area goes down that child's uplink and is
+// answered asynchronously; a device on this gateway's own link is answered in
+// the request. A typed endpoint is a thin wrapper over this.
+fn route_control(area: u32, node: u32, opcode: u16, argument: u32) Response {
     let tx: u32 = next_tx()
     let device: DeviceId = DeviceId { u16(area), u16(node) }
-    let control: ControlRequest = ControlRequest { device, u16(1), interval }
+    let control: ControlRequest = ControlRequest { device, opcode, argument }
     let encoded: string = robohub_v1_frame(
         MESSAGE_ID_CONTROL_REQUEST, tx, control_request_marshal(control))
 
-    // A device in a child's area is behind a relay: the command goes down the
-    // uplink the child announced itself on. It is answered asynchronously — the
-    // child's reply arrives on the uplink and is applied when it is drained — so
-    // the request that routed it says so rather than waiting for a value it
-    // cannot see here.
     let child: u32 = gateway_state_get_u32("area." + int_to_str(area))
     if child != 0 {
         if !gateway_uplink_send(device_area(child), device_node(child), encoded) {
@@ -325,7 +328,6 @@ fn device_sampling_rate(req: Request) Response {
         return json(202, "{\"success\":true,\"routed\":true,\"tx\":" + int_to_str(tx) + "}")
     }
 
-    // A device on this gateway's own link is answered in the same request.
     gateway_rpc_register(tx)
     if !gateway_serial_write(encoded) {
         return gateway_error(503, "the serial link is unavailable")
@@ -342,14 +344,56 @@ fn device_sampling_rate(req: Request) Response {
     if acknowledgement.result != 0 {
         return gateway_error(502, "the device refused the command")
     }
-    return json(200, "{\"success\":true,\"actual_interval_ms\":" +
-        int_to_str(acknowledgement.argument) + "}")
+    return json(200, "{\"success\":true,\"opcode\":" + int_to_str(u32(opcode)) +
+        ",\"actual\":" + int_to_str(acknowledgement.argument) + "}")
 }
 
-// parse_interval_ms reads the number after "interval_ms" in a small JSON body,
-// which is enough for the one field this endpoint takes.
-fn parse_interval_ms(body: string) u32 {
-    let at: i32 = str_index_of(body, "\"interval_ms\"")
+// device_sampling_rate changes one device's reporting interval: opcode 1, the
+// interval as the argument.
+fn device_sampling_rate(req: Request) Response {
+    let area: u32 = int_from_str(param(req, "area"))
+    let node: u32 = int_from_str(param(req, "node"))
+    let interval: u32 = parse_interval_ms(request_body(req))
+    if area == 0 || interval == 0 {
+        return gateway_error(400, "an area, a node and a positive interval_ms are required")
+    }
+    return route_control(area, node, u16(CONTROL_OPCODE_SET_SAMPLING_RATE), interval)
+}
+
+// device_command is the control family at its most general: any opcode and
+// argument, addressed to a named device. A device's own opcodes begin at
+// CONTROL_OPCODE_VENDOR_BASE, so a custom command cannot collide with a core one.
+fn device_command(req: Request) Response {
+    let area: u32 = int_from_str(param(req, "area"))
+    let node: u32 = int_from_str(param(req, "node"))
+    let body: string = request_body(req)
+    let opcode: u32 = parse_u32_field(body, "\"opcode\"")
+    if area == 0 || opcode == 0 {
+        return gateway_error(400, "an area, a node and an opcode are required")
+    }
+    let argument: u32 = parse_u32_field(body, "\"argument\"")
+    return route_control(area, node, u16(opcode), argument)
+}
+
+// device_switch drives a switch: opcode SET_SWITCH, the argument 1 for on and 0
+// for off.
+fn device_switch(req: Request) Response {
+    let area: u32 = int_from_str(param(req, "area"))
+    let node: u32 = int_from_str(param(req, "node"))
+    if area == 0 {
+        return gateway_error(400, "an area and a node are required")
+    }
+    var on: u32 = 0
+    if parse_bool_field(request_body(req), "\"on\"") {
+        on = 1
+    }
+    return route_control(area, node, u16(CONTROL_OPCODE_SET_SWITCH), on)
+}
+
+// parse_u32_field reads the unsigned number after a JSON key in a small request
+// body, which is enough for the fields these endpoints take.
+fn parse_u32_field(body: string, key: string) u32 {
+    let at: i32 = str_index_of(body, key)
     if at < 0 {
         return 0
     }
@@ -372,4 +416,31 @@ fn parse_interval_ms(body: string) u32 {
         i = i + 1
     }
     return int_from_str(digits)
+}
+
+// parse_interval_ms reads the reporting interval from a request body.
+fn parse_interval_ms(body: string) u32 {
+    return parse_u32_field(body, "\"interval_ms\"")
+}
+
+// parse_bool_field reads a JSON boolean (or 0/1) after a key.
+fn parse_bool_field(body: string, key: string) bool {
+    let at: i32 = str_index_of(body, key)
+    if at < 0 {
+        return false
+    }
+    let length: u32 = strlen(body)
+    var i: u32 = u32(at)
+    while i < length && str_at(body, i) != u8(58) {
+        i = i + 1
+    }
+    i = i + 1
+    while i < length && (str_at(body, i) == u8(32) || str_at(body, i) == u8(9)) {
+        i = i + 1
+    }
+    if i + 3 < length && str_at(body, i) == u8(116) && str_at(body, i + 1) == u8(114) &&
+        str_at(body, i + 2) == u8(117) && str_at(body, i + 3) == u8(101) {
+        return true /* "true" */
+    }
+    return i < length && str_at(body, i) == u8(49) /* "1" */
 }
