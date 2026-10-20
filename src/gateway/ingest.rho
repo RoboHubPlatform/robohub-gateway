@@ -25,6 +25,10 @@ fn ingest_frame(encoded: string) void {
         }
         if frame.msg_id == MESSAGE_ID_POWER_READING {
             handle_power_reading(frame.payload)
+            return
+        }
+        if frame.msg_id == MESSAGE_ID_STATE_READING {
+            handle_state_reading(frame.payload)
         }
         return
     }

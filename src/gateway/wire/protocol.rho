@@ -51,6 +51,7 @@ const MESSAGE_ID_ANNOUNCE: u32 = 257
 const MESSAGE_ID_TELEMETRY: u32 = 513
 const MESSAGE_ID_READING: u32 = 513
 const MESSAGE_ID_POWER_READING: u32 = 514
+const MESSAGE_ID_STATE_READING: u32 = 515
 const MESSAGE_ID_CONTROL_REQUEST: u32 = 769
 const MESSAGE_ID_CONTROL_RESPONSE: u32 = 770
 const MESSAGE_ID_DIAG_REQUEST: u32 = 1025
@@ -103,6 +104,18 @@ const DEVICE_KIND_METER: u32 = 2
 const DEVICE_KIND_SENSOR: u32 = 3
 const DEVICE_KIND_GATEWAY: u32 = 4
 const DEVICE_KIND_BATTERY: u32 = 5
+const DEVICE_KIND_SWITCH: u32 = 6
+const DEVICE_KIND_ACTUATOR: u32 = 7
+
+// StateField values.
+const STATE_FIELD_SWITCH_STATE: u32 = 1
+const STATE_FIELD_SETPOINT: u32 = 2
+
+// ControlOpcode values.
+const CONTROL_OPCODE_SET_SAMPLING_RATE: u32 = 1
+const CONTROL_OPCODE_SET_SWITCH: u32 = 2
+const CONTROL_OPCODE_SET_SETPOINT: u32 = 3
+const CONTROL_OPCODE_VENDOR_BASE: u32 = 256
 
 // PowerField values.
 const POWER_FIELD_PV_POWER: u32 = 1
@@ -490,6 +503,57 @@ fn power_reading_unmarshal(data: string) PowerReading {
     off = off + 4
     let energy_total_kwh: f32 = robohub_v1_get_f32(data, off)
     return PowerReading { device, timestamp_ms, kind, status, valid, pv_power_w, load_power_w, grid_power_w, battery_power_w, battery_soc, energy_today_kwh, energy_total_kwh }
+}
+
+// StateReading is StateReading on the wire, the version byte included.
+struct StateReading {
+    device: DeviceId
+    timestamp_ms: u32
+    kind: u32
+    status: u16
+    valid: u16
+    switch_state: u16
+    setpoint: f32
+}
+
+// state_reading_valid reports whether a payload is a whole StateReading of this version.
+fn state_reading_valid(data: string) bool {
+    if strlen(data) < 24 {
+        return false
+    }
+    return u32(str_at(data, 0)) == 1
+}
+
+// state_reading_marshal writes a StateReading: the version byte and its fields.
+fn state_reading_marshal(value: StateReading) string {
+    var out: string = str_from_byte(u8(1))
+    out = out + device_id_marshal(value.device)
+    out = out + robohub_v1_put_u32(value.timestamp_ms)
+    out = out + robohub_v1_put_u32(value.kind)
+    out = out + robohub_v1_put_u16(value.status)
+    out = out + robohub_v1_put_u16(value.valid)
+    out = out + robohub_v1_put_u16(value.switch_state)
+    out = out + robohub_v1_put_f32(value.setpoint)
+    return out
+}
+
+// state_reading_unmarshal reads a payload this schema's state_reading_valid accepted.
+fn state_reading_unmarshal(data: string) StateReading {
+    var off: u32 = 1
+    let device: DeviceId = device_id_unmarshal(str_slice(data, off, 5))
+    off = off + 5
+    let timestamp_ms: u32 = robohub_v1_get_u32(data, off)
+    off = off + 4
+    let kind: u32 = robohub_v1_get_u32(data, off)
+    off = off + 4
+    let status: u16 = robohub_v1_get_u16(data, off)
+    off = off + 2
+    let valid: u16 = robohub_v1_get_u16(data, off)
+    off = off + 2
+    let switch_state: u16 = robohub_v1_get_u16(data, off)
+    off = off + 2
+    let setpoint: f32 = robohub_v1_get_f32(data, off)
+    return StateReading { device, timestamp_ms, kind, status, valid, switch_state, setpoint }
 }
 
 // Announce is Announce on the wire, the version byte included.

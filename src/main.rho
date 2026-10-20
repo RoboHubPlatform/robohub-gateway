@@ -26,9 +26,12 @@ import std.web.http
 
 route GET  "/api/v1/telemetry/temperature" => latest_temperature
 route GET  "/api/v1/telemetry/power" => latest_power
+route GET  "/api/v1/telemetry/state" => latest_state
 route GET  "/api/v1/nodes" => nodes
 route GET  "/api/v1/nodes/{area}/{node}/diagnostics" => device_diagnostics
 route POST "/api/v1/nodes/{area}/{node}/sampling-rate" => device_sampling_rate
+route POST "/api/v1/nodes/{area}/{node}/command" => device_command
+route POST "/api/v1/nodes/{area}/{node}/switch" => device_switch
 route GET  "/api/v1/diagnostics" => diagnostics
 route POST "/api/v1/telemetry/sampling-rate" => set_sampling_rate
 route POST "/api/v1/uplink/pump" => uplink_pump
