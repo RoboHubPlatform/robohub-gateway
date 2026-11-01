@@ -149,7 +149,8 @@ fn node_reading(key: u32) string {
         ",\"node_id\":" + int_to_str(device_node(key)) +
         ",\"temperature_c\":" + gateway_f32_str(gateway_state_get_f32(device_suffix(key, ".temperature_c"))) +
         ",\"status\":\"" + status_text(gateway_state_get_u32(device_suffix(key, ".status"))) +
-        "\",\"last_updated_ms\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".last_updated_ms")))
+        "\",\"last_updated_ms\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".last_updated_ms"))) +
+        ",\"received_at_ms\":" + received_at(key)
 
     if gateway_state_get_u32(device_suffix(key, ".has_power")) != 0 {
         body = body + power_json(key)
@@ -204,7 +205,8 @@ fn latest_power(req: Request) Response {
     let body: string = "{\"area_id\":" + int_to_str(device_area(key)) +
         ",\"node_id\":" + int_to_str(device_node(key)) +
         ",\"status\":\"" + status_text(gateway_state_get_u32(device_suffix(key, ".status"))) +
-        "\",\"last_updated_ms\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".last_updated_ms")))
+        "\",\"last_updated_ms\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".last_updated_ms"))) +
+        ",\"received_at_ms\":" + received_at(key)
     return json(200, body + power_json(key) + "}")
 }
 
@@ -218,6 +220,7 @@ fn latest_state(req: Request) Response {
         ",\"kind\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".kind"))) +
         ",\"status\":\"" + status_text(gateway_state_get_u32(device_suffix(key, ".status"))) +
         "\",\"last_updated_ms\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".last_updated_ms"))) +
+        ",\"received_at_ms\":" + received_at(key) +
         ",\"valid\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".valid")))
     return json(200, body + state_json(key) + "}")
 }
@@ -233,6 +236,81 @@ fn diagnostics(req: Request) Response {
         ",\"children\":" + int_to_str(gateway_state_get_u32("children")) +
         ",\"frames\":" + int_to_str(gateway_state_get_u32("frames")) + "}"
     return json(200, body)
+}
+
+// home is the gateway's own page: what it is doing and the nodes it has heard
+// from. The REST API is what a program reads; this is what a person opens at the
+// root of the same server.
+fn received_at(key: u32) string {
+    let value: string = gateway_state_get(device_suffix(key, ".received_at_ms"))
+    if value == "" {
+        return int_to_str(gateway_state_get_u32(device_suffix(key, ".last_updated_ms")))
+    }
+    return value
+}
+
+fn home_with_limit(req: Request, limit: u32) Response {
+    drain_uplink()
+    let count: u32 = gateway_node_count()
+    var rows: string = ""
+    var i: u32 = 0
+    while i < count {
+        let key: u32 = gateway_node_at(i)
+        let status: string = status_text(gateway_state_get_u32(device_suffix(key, ".status")))
+        rows = rows + "<tr><td>" + int_to_str(device_area(key)) +
+            "</td><td>" + int_to_str(device_node(key)) +
+            "</td><td>" + gateway_f32_str(gateway_state_get_f32(device_suffix(key, ".temperature_c"))) +
+            "</td><td class=\"status-" + status + "\">" + status +
+            "</td><td><span class=\"local-time\" data-ms=\"" +
+            received_at(key) + "\" title=\"" +
+            int_to_str(gateway_state_get_u32(device_suffix(key, ".last_updated_ms"))) +
+            " ms since node boot\">" + received_at(key) + "</span></td></tr>"
+        i = i + 1
+    }
+    if count == 0 {
+        rows = "<tr><td colspan=\"5\" class=\"empty\">No node has been heard from yet.</td></tr>"
+    }
+    let body: string = "<!doctype html><html><head><meta charset=\"utf-8\">" +
+        "<meta http-equiv=\"refresh\" content=\"2\">" +
+        "<title>RoboHub Gateway</title><style>" +
+        "body{font-family:system-ui,sans-serif;max-width:74rem;margin:2rem auto;padding:0 1rem;color:#1e232b;background:#f7f8fa}" +
+        "h1{margin-bottom:.2rem} .meta{color:#5d6673} table{border-collapse:collapse;width:100%;background:#fff;border:1px solid #dfe3e9;border-radius:10px;overflow:hidden}" +
+        "th,td{padding:.6rem .8rem;text-align:left;border-top:1px solid #eef1f5} th{background:#f1f3f6;font-size:.8rem;color:#5d6673}" +
+        ".empty{text-align:center;color:#8a929e;padding:1.5rem}.status-OK{color:#19734d;font-weight:600}.status-FAULT{color:#b3261e;font-weight:600}" +
+        "a{color:#245db3} code{background:#eef1f5;padding:.1rem .3rem;border-radius:4px}" +
+        "</style></head><body><h1>RoboHub Gateway</h1>" +
+        "<p class=\"meta\">mode <strong>" + gateway_mode() + "</strong> · area " +
+        int_to_str(gateway_area()) + " · up " + int_to_str(gateway_now_ms() / 1000) +
+        " s · devices " + int_to_str(count) + " · frames " +
+        int_to_str(gateway_state_get_u32("frames")) + "</p>" +
+        "<table><thead><tr><th>Area</th><th>Node</th><th>Temperature °C</th><th>Status</th><th>Last update (ms)</th></tr></thead><tbody>" +
+        rows + "</tbody></table>" +
+        "<h2>Frames</h2><p class=\"meta\">" + history_select(limit) + "</p>" +
+        "<table><thead><tr><th>Time (ms)</th><th>Kind</th><th>Area</th><th>Node</th>" +
+        "<th>Temperature °C</th><th>Status</th><th>Detail</th></tr></thead><tbody>" +
+        history_rows(limit) + "</tbody></table>" +
+        "<p class=\"meta\">API: <a href=\"/api/v1/nodes\">nodes</a> · " +
+        "<a href=\"/api/v1/telemetry/temperature\">temperature</a> · " +
+        "<a href=\"/api/v1/diagnostics\">diagnostics</a> · " +
+        "<a href=\"/healthz\">health</a></p>" +
+        "<script>document.querySelectorAll('.local-time').forEach(function (el) {" +
+        "var ms = Number(el.getAttribute('data-ms'));" +
+        "if (ms > 0) { el.textContent = new Date(ms).toLocaleString(); }});</script>" +
+        "</body></html>"
+    return html(200, body)
+}
+
+fn home(req: Request) Response {
+    return home_with_limit(req, 10)
+}
+
+fn frames(req: Request) Response {
+    return home_with_limit(req, history_limit(param(req, "count")))
+}
+
+fn export_frames_csv(req: Request) Response {
+    let limit: u32 = history_limit(param(req, "count"))
+    return Response{ 200, history_csv(limit), "text/csv; charset=utf-8" }
 }
 
 // set_sampling_rate marshals and frames a control request for a device, sends

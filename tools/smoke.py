@@ -275,6 +275,24 @@ def main():
        or diagnostics.get("devices_seen") != 3:
         failures.append(f"diagnostics mismatch: {status} {body}")
 
+    # 2c-bis. The root page is the gateway's own page, not a 404: a person opens
+    # the same server the API runs on and sees the nodes it has heard from.
+    status, body = http("GET", "/")
+    print("HOME:", status, "bytes:", len(body))
+    if status != 200 or "RoboHub Gateway" not in body or "24.31" not in body:
+        failures.append(f"home page mismatch: {status} {body[:200]}")
+
+    # 2c-ter. The frame history: more than the latest row, newest first, and a
+    # CSV export that keeps the transmitted millisecond timestamps.
+    status, body = http("GET", "/frames/10")
+    print("FRAMES:", status, "bytes:", len(body))
+    if status != 200 or "Frames" not in body or "24.31" not in body:
+        failures.append(f"frames page mismatch: {status} {body[:200]}")
+    status, body = http("GET", "/export/frames/10/csv")
+    print("CSV:", status, "bytes:", len(body))
+    if status != 200 or not body.startswith("timestamp_ms,received_at_ms,kind,area_id,node_id") or "24.31" not in body:
+        failures.append(f"frames csv mismatch: {status} {body[:200]}")
+
     # 2d. A power device — an inverter or a meter — sends a PowerReading, its own
     # message. It becomes a device record with power and energy figures, the
     # listing carries them, the power endpoint serves the latest, and the stream

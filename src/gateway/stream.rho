@@ -66,6 +66,7 @@ fn record_reading(area: u32, node: u32, timestamp: u32, temperature: f32, status
     gateway_state_set_f32(device_suffix(key, ".temperature_c"), temperature)
     gateway_state_set_u32(device_suffix(key, ".status"), status)
     gateway_state_set_u32(device_suffix(key, ".last_updated_ms"), timestamp)
+    gateway_state_set(device_suffix(key, ".received_at_ms"), gateway_wall_time_ms())
 
     // The most recent frame, whichever device sent it, for the single reading
     // endpoint and for the stream.
@@ -75,6 +76,7 @@ fn record_reading(area: u32, node: u32, timestamp: u32, temperature: f32, status
     gateway_state_set_u32("last_updated_ms", timestamp)
     gateway_state_set_u32("frames", gateway_state_get_u32("frames") + 1)
 
+    history_record("reading", key, timestamp, temperature, status, "")
     stream_publish(key, timestamp, temperature, status)
 }
 
@@ -120,12 +122,14 @@ fn record_power(message: PowerReading) void {
     gateway_state_set_f32(device_suffix(key, ".energy_today_kwh"), message.energy_today_kwh)
     gateway_state_set_f32(device_suffix(key, ".energy_total_kwh"), message.energy_total_kwh)
     gateway_state_set_u32(device_suffix(key, ".last_updated_ms"), message.timestamp_ms)
+    gateway_state_set(device_suffix(key, ".received_at_ms"), gateway_wall_time_ms())
 
     // The newest power reading, whichever device sent it, for the single power
     // endpoint — kept apart from `latest_device`, which a sensor may have set.
     gateway_state_set_u32("latest_power_device", key)
     gateway_state_set_u32("frames", gateway_state_get_u32("frames") + 1)
 
+    history_record("power", key, message.timestamp_ms, 0.0, u32(message.status), power_json(key))
     stream_publish_power(key, message)
 }
 
@@ -172,10 +176,12 @@ fn record_state(message: StateReading) void {
     gateway_state_set_u32(device_suffix(key, ".switch_state"), u32(message.switch_state))
     gateway_state_set_f32(device_suffix(key, ".setpoint"), message.setpoint)
     gateway_state_set_u32(device_suffix(key, ".last_updated_ms"), message.timestamp_ms)
+    gateway_state_set(device_suffix(key, ".received_at_ms"), gateway_wall_time_ms())
 
     gateway_state_set_u32("latest_state_device", key)
     gateway_state_set_u32("frames", gateway_state_get_u32("frames") + 1)
 
+    history_record("state", key, message.timestamp_ms, 0.0, u32(message.status), state_json(key))
     stream_publish_state(key, message)
 }
 

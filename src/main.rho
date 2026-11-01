@@ -20,10 +20,14 @@ include "gateway/port.rho"
 include "gateway/wire/protocol.rho"
 include "gateway/ingest.rho"
 include "gateway/stream.rho"
+include "gateway/history.rho"
 include "gateway/state.rho"
 
 import std.web.http
 
+route GET  "/" => home
+route GET  "/frames/{count}" => frames
+route GET  "/export/frames/{count}/csv" => export_frames_csv
 route GET  "/api/v1/telemetry/temperature" => latest_temperature
 route GET  "/api/v1/telemetry/power" => latest_power
 route GET  "/api/v1/telemetry/state" => latest_state

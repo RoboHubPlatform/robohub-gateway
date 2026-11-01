@@ -56,11 +56,14 @@ and the listener are:
 The latest telemetry the gateway has seen, from whichever device sent it last.
 
 ```json
-{ "area_id": 7, "node_id": 1, "temperature_c": 24.38, "status": "OK", "last_updated_ms": 186095 }
+{ "area_id": 7, "node_id": 1, "temperature_c": 24.38, "status": "OK", "last_updated_ms": 186095, "received_at_ms": 1793559822558 }
 ```
 
-Before any frame arrives the reading is `0.00`, the status `OK` and the
-timestamp `0` — a zero reading, not an error.
+`last_updated_ms` is the node's own `timestamp_ms` — milliseconds since the node
+booted. `received_at_ms` is the gateway's wall clock when it received the frame,
+and is what the page puts on a calendar. Both are kept. Before any frame arrives
+the reading is `0.00`, the status `OK` and the timestamps `0` — a zero reading,
+not an error.
 
 ### `GET /api/v1/nodes`
 
@@ -71,8 +74,8 @@ node 2 in area 7 and node 2 in area 9 are two devices.
 
 ```json
 [
-  { "area_id": 7, "node_id": 1, "temperature_c": 24.38, "status": "OK", "last_updated_ms": 186095 },
-  { "area_id": 7, "node_id": 2, "temperature_c": 19.50, "status": "OK", "last_updated_ms": 124600 }
+  { "area_id": 7, "node_id": 1, "temperature_c": 24.38, "status": "OK", "last_updated_ms": 186095, "received_at_ms": 1793559822558 },
+  { "area_id": 7, "node_id": 2, "temperature_c": 19.50, "status": "OK", "last_updated_ms": 124600, "received_at_ms": 1793559823011 }
 ]
 ```
 
@@ -351,3 +354,19 @@ nothing, which is what to check before the board is on the bench.
 
 A gateway that reads a board's serial link in a container needs the device:
 `RH_DEPLOY_DOCKER_RUN='--net host --device /dev/ttyUSB0 -p 8080:8080 {image}'`.
+
+## The gateway page
+
+`GET /` serves a small dashboard beside the API: the gateway's mode, area,
+uptime, device count and frames, a latest-per-node table, and a frame history
+whose first row is the newest. The history window is selectable at
+`/frames/10`, `25`, `50`, `100`, `500` or `1000`, and
+`/export/frames/<count>/csv` exports it as CSV. The page refreshes every
+two seconds. A node's `timestamp_ms` is its own uptime; the gateway records the
+wall-clock `received_at_ms` beside it, and both are kept in the API and CSV. The
+page renders `received_at_ms` as local date/time in the browser. It links to `/api/v1/nodes`,
+`/api/v1/telemetry/temperature`, `/api/v1/diagnostics` and `/healthz`.
+
+## Release history
+
+[CHANGELOG.md](CHANGELOG.md) — the changes in 0.2.0 and earlier releases.

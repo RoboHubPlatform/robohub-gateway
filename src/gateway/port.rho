@@ -49,6 +49,10 @@ extern fn gateway_udp_send(text: string) bool
 // clock that can step backwards.
 extern fn gateway_now_ms() u32
 
+// wall_time_ms is the host's Unix time in milliseconds. A node timestamp is
+// its own uptime, so this is what places a frame on a calendar.
+extern fn gateway_wall_time_ms() string
+
 // f32_str renders a float with the two decimals a telemetry frame carries.
 extern fn gateway_f32_str(value: f32) string
 
