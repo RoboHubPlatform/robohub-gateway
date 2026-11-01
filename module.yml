@@ -9,7 +9,7 @@
 module:
   name: robohub-gateway
   type: rho
-  version: 0.1.0
+  version: 0.2.0
   description: >
     Edge gateway for RoboHub firmware nodes: ingests COBS frames over serial,
     keeps each node's latest state, streams telemetry to PlotJuggler over UDP,

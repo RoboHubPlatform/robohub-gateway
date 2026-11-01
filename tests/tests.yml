@@ -1,0 +1,9 @@
+# The gateway's own smoke test, driven through the host's Python once the Go
+# server is built. It drives a telemetry frame through a pty and checks the API,
+# the root page, the streamed datagrams and the uplink.
+name: gateway
+suites:
+  - name: gateway-smoke
+    kind: command
+    tags: [smoke]
+    command: [python3, tools/smoke.py]

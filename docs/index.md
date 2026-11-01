@@ -1,5 +1,7 @@
 # robohub-gateway
 
+**Version:** 0.2.0
+
 The edge gateway for RoboHub firmware nodes.
 
 A node writes telemetry as COBS frames over serial. The gateway reads them,
@@ -34,6 +36,13 @@ handler share.
   when the node does not reply in time. A node may clamp the interval it can
   meet and reports what it actually set.
 
+- `GET /` — the gateway page: mode, area, uptime, devices, frames, the latest
+  values per node, and a frame history whose first row is newest. A node's
+  `last_updated_ms` is its own uptime; the gateway's wall-clock
+  `received_at_ms` is recorded beside it, and the page renders that locally. The history
+  window is `/frames/{10|25|50|100|500|1000}`; `/export/frames/<count>/csv`
+  exports it. Every node record carries both `last_updated_ms` (the node's
+  uptime) and the gateway's wall-clock `received_at_ms`.
 - `GET /healthz` — a liveness probe, registered for every service.
 
 ## What it emits
