@@ -1,0 +1,189 @@
+module gateway.devices
+
+// Network devices the gateway owns.
+//
+// A device is registered by name, kind, transport and address. An HTTP device
+// is polled and switched by the gateway itself; an MQTT device is registered
+// here but its readings arrive through the frame bridge, because the broker
+// client belongs to the platform.
+//
+// The definitions and latest values live in the shared state the gateway
+// already uses, so a handler and the reader see the same device.
+
+fn device_json_bool(text: string, key: string) string {
+    let at: i32 = str_index_of(text, "\"" + key + "\":")
+    if at < 0 {
+        return ""
+    }
+    let rest: string = str_slice(text, u32(at) + u32(strlen(key)) + 3,
+        u32(strlen(text)) - u32(at) - u32(strlen(key)) - 3)
+    if str_index_of(rest, "true") == 0 {
+        return "on"
+    }
+    if str_index_of(rest, "false") == 0 {
+        return "off"
+    }
+    return ""
+}
+
+fn device_json_number(text: string, key: string) string {
+    let at: i32 = str_index_of(text, "\"" + key + "\":")
+    if at < 0 {
+        return ""
+    }
+    var rest: string = str_slice(text, u32(at) + u32(strlen(key)) + 3,
+        u32(strlen(text)) - u32(at) - u32(strlen(key)) - 3)
+    var out: string = ""
+    var i: u32 = 0
+    while i < u32(strlen(rest)) {
+        let ch: string = str_slice(rest, i, 1)
+        if (ch >= "0" && ch <= "9") || ch == "." || ch == "-" {
+            out = out + ch
+            i = i + 1
+        } else if strlen(out) == 0 &&
+            (ch == " " || ch == "\t") {
+            i = i + 1
+        } else {
+            break
+        }
+    }
+    return out
+}
+
+fn device_form(body: string, name: string) string {
+    var rest: string = body + "&"
+    while strlen(rest) > 0 {
+        let amp: i32 = str_index_of(rest, "&")
+        if amp < 0 {
+            break
+        }
+        let pair: string = str_slice(rest, 0, u32(amp))
+        rest = str_slice(rest, u32(amp) + 1, u32(strlen(rest)) - u32(amp) - 1)
+        let equals: i32 = str_index_of(pair, "=")
+        if equals < 0 {
+            continue
+        }
+        if str_slice(pair, 0, u32(equals)) == name {
+            return str_slice(pair, u32(equals) + 1,
+                u32(strlen(pair)) - u32(equals) - 1)
+        }
+    }
+    return ""
+}
+
+fn device_json_string(value: string) string {
+    var out: string = "\""
+    var i: u32 = 0
+    let length: u32 = u32(strlen(value))
+    while i < length {
+        let ch: string = str_slice(value, i, 1)
+        if ch == "\"" || ch == "\\" {
+            out = out + "\\" + ch
+        } else {
+            out = out + ch
+        }
+        i = i + 1
+    }
+    return out + "\""
+}
+
+fn device_field_key(id: u32, field_name: string) string {
+    return "device." + int_to_str(id) + "." + field_name
+}
+
+fn device_count() u32 {
+    return gateway_state_get_u32("devices")
+}
+
+fn device_register(req: Request) Response {
+    let body: string = request_body(req)
+    let name: string = device_form(body, "name")
+    let address: string = device_form(body, "address")
+    if strlen(name) == 0 || strlen(address) == 0 {
+        return json(400, "{\"success\":false,\"error\":\"name and address are required\"}")
+    }
+    let id: u32 = device_count() + 1
+    gateway_state_set_u32("devices", id)
+    gateway_state_set(device_field_key(id, "name"), name)
+    gateway_state_set(device_field_key(id, "kind"), device_form(body, "kind"))
+    gateway_state_set(device_field_key(id, "transport"), device_form(body, "transport"))
+    gateway_state_set(device_field_key(id, "address"), address)
+    gateway_state_set(device_field_key(id, "device_id"), device_form(body, "device_id"))
+    gateway_state_set(device_field_key(id, "state"), "unknown")
+    gateway_state_set(device_field_key(id, "power_w"), "0")
+    gateway_state_set(device_field_key(id, "updated"), gateway_wall_time_ms())
+    return json(201, "{\"success\":true,\"id\":" + int_to_str(id) + "}")
+}
+
+fn device_one(id: u32) string {
+    return "{\"id\":" + int_to_str(id) +
+        ",\"name\":" + device_json_string(gateway_state_get(device_field_key(id, "name"))) +
+        ",\"kind\":" + device_json_string(gateway_state_get(device_field_key(id, "kind"))) +
+        ",\"transport\":" + device_json_string(gateway_state_get(device_field_key(id, "transport"))) +
+        ",\"address\":" + device_json_string(gateway_state_get(device_field_key(id, "address"))) +
+        ",\"device_id\":" + device_json_string(gateway_state_get(device_field_key(id, "device_id"))) +
+        ",\"state\":" + device_json_string(gateway_state_get(device_field_key(id, "state"))) +
+        ",\"power_w\":" + gateway_state_get(device_field_key(id, "power_w")) +
+        ",\"updated_ms\":" + device_json_string(gateway_state_get(device_field_key(id, "updated"))) + "}"
+}
+
+fn device_list(req: Request) Response {
+    var body: string = "["
+    let count: u32 = device_count()
+    var i: u32 = 1
+    while i <= count {
+        if i > 1 {
+            body = body + ","
+        }
+        body = body + device_one(i)
+        i = i + 1
+    }
+    return json(200, body + "]")
+}
+
+fn device_poll(req: Request) Response {
+    let id: u32 = int_from_str(param(req, "id"))
+    let address: string = gateway_state_get(device_field_key(id, "address"))
+    if id == 0 || strlen(address) == 0 {
+        return json(404, "{\"success\":false}")
+    }
+    let text: string = gateway_http_get(address + "/rpc/Shelly.GetStatus", 3000)
+    if strlen(text) == 0 {
+        return json(502, "{\"success\":false,\"error\":\"device did not answer\"}")
+    }
+    let state: string = device_json_bool(text, "output")
+    if strlen(state) > 0 {
+        gateway_state_set(device_field_key(id, "state"), state)
+    }
+    let power: string = device_json_number(text, "apower")
+    if strlen(power) > 0 {
+        gateway_state_set(device_field_key(id, "power_w"), power)
+    }
+    gateway_state_set(device_field_key(id, "updated"), gateway_wall_time_ms())
+    return json(200, "{\"success\":true,\"device\":" + device_one(id) + "}")
+}
+
+fn devices_switch(req: Request) Response {
+    let id: u32 = int_from_str(param(req, "id"))
+    let body: string = request_body(req)
+    var state: string = device_form(body, "state")
+    if strlen(state) == 0 {
+        state = request_query_param(req, "state")
+    }
+    let address: string = gateway_state_get(device_field_key(id, "address"))
+    if id == 0 || strlen(address) == 0 {
+        return json(404, "{\"success\":false}")
+    }
+    let on: string = "false"
+    if state == "on" {
+        on = "true"
+    }
+    let response: string = gateway_http_get(
+        address + "/rpc/Switch.Set?id=0&on=" + on, 3000)
+    if strlen(response) == 0 {
+        return json(502, "{\"success\":false,\"error\":\"device did not answer\"}")
+    }
+    gateway_state_set(device_field_key(id, "state"), state)
+    gateway_state_set(device_field_key(id, "updated"), gateway_wall_time_ms())
+    return json(200, "{\"success\":true,\"device\":" + device_one(id) + "}")
+}

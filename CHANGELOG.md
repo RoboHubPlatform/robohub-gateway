@@ -2,6 +2,15 @@
 
 All notable changes to this module are recorded here, one section per release.
 
+## [0.3.1] - 2026-11-02
+
+Network device API. A Shelly or another HTTP device is registered with
+`POST /api/v1/devices`, polled with `POST /api/v1/devices/{id}/poll`, and
+switched with `POST /api/v1/devices/{id}/switch`; `GET /api/v1/devices` lists
+the definitions and latest state. The gateway port gained the HTTP get and post
+the device path uses. An aquarium switch widget can drive the plug through the
+gateway switch endpoint.
+
 ## [0.3.0] - 2026-11-02
 
 `POST /api/v1/frames` accepts one encoded frame from a network bridge. A Shelly over HTTP RPC or MQTT, or any other IP device behind a relay or poller, becomes a device record through the same ingest path as a serial frame.

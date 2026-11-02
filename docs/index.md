@@ -31,6 +31,12 @@ handler share.
 - `GET /api/v1/diagnostics` — what the gateway itself is doing: the mode it was
   deployed in, the area it speaks for, its uptime and what it has carried.
 
+- `POST /api/v1/devices` — register a network device (name, kind, transport,
+  address, device id).
+- `GET /api/v1/devices` — the registered devices and their latest state.
+- `POST /api/v1/devices/{id}/poll` — read an HTTP device's status.
+- `POST /api/v1/devices/{id}/switch` — switch an HTTP device on or off; the
+  state may come as a form field or as `?state=on|off`.
 - `POST /api/v1/frames` — accepts one encoded frame from a network bridge. A
   Shelly or another IP device reaches the gateway through a relay or a small
   poller; the frame is the same one a serial link carries, so it lands in the
