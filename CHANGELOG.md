@@ -2,6 +2,10 @@
 
 All notable changes to this module are recorded here, one section per release.
 
+## [0.3.0] - 2026-11-02
+
+`POST /api/v1/frames` accepts one encoded frame from a network bridge. A Shelly over HTTP RPC or MQTT, or any other IP device behind a relay or poller, becomes a device record through the same ingest path as a serial frame.
+
 ## [0.2.0] - 2026-11-01
 
 The gateway page shows a frame history, newest first, with selectable windows
