@@ -93,6 +93,7 @@ enum DeviceKind {
     BATTERY = 5
     SWITCH = 6
     ACTUATOR = 7
+    PLUG = 8
 }
 
 // Which figures a state reading carries, one bit each. The same idea as

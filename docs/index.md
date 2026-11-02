@@ -31,6 +31,10 @@ handler share.
 - `GET /api/v1/diagnostics` — what the gateway itself is doing: the mode it was
   deployed in, the area it speaks for, its uptime and what it has carried.
 
+- `POST /api/v1/frames` — accepts one encoded frame from a network bridge. A
+  Shelly or another IP device reaches the gateway through a relay or a small
+  poller; the frame is the same one a serial link carries, so it lands in the
+  same device record and stream.
 - `POST /api/v1/telemetry/sampling-rate` — an RPC that changes a node's
   reporting interval, answered `200` with the node's acknowledgement or `504`
   when the node does not reply in time. A node may clamp the interval it can
