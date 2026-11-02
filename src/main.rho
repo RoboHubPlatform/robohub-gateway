@@ -21,6 +21,7 @@ include "gateway/wire/protocol.rho"
 include "gateway/ingest.rho"
 include "gateway/stream.rho"
 include "gateway/history.rho"
+include "gateway/devices.rho"
 include "gateway/state.rho"
 
 import std.web.http
@@ -39,6 +40,10 @@ route POST "/api/v1/nodes/{area}/{node}/switch" => device_switch
 route GET  "/api/v1/diagnostics" => diagnostics
 route POST "/api/v1/telemetry/sampling-rate" => set_sampling_rate
 route POST "/api/v1/frames" => ingest_http_frame
+route POST "/api/v1/devices" => device_register
+route GET "/api/v1/devices" => device_list
+route POST "/api/v1/devices/{id}/poll" => device_poll
+route POST "/api/v1/devices/{id}/switch" => devices_switch
 route POST "/api/v1/uplink/pump" => uplink_pump
 
 // A liveness probe is registered by the router port for every service, so this
