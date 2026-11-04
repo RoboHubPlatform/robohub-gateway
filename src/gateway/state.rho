@@ -19,7 +19,7 @@ fn next_tx() u32 {
 
 // gateway_error renders a JSON error, for the failure paths.
 fn gateway_error(status: u32, message: string) Response {
-    return Response{ status, "{\"success\":false,\"error\":\"" + message + "\"}", "application/json" }
+    return Response{ status, "{\"success\":false,\"error\":\"" + message + "\"}", "application/json", "" }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -310,7 +310,7 @@ fn frames(req: Request) Response {
 
 fn export_frames_csv(req: Request) Response {
     let limit: u32 = history_limit(param(req, "count"))
-    return Response{ 200, history_csv(limit), "text/csv; charset=utf-8" }
+    return Response{ 200, history_csv(limit), "text/csv; charset=utf-8", "" }
 }
 
 // set_sampling_rate marshals and frames a control request for a device, sends
