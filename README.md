@@ -370,3 +370,22 @@ page renders `received_at_ms` as local date/time in the browser. It links to `/a
 ## Release history
 
 [CHANGELOG.md](CHANGELOG.md) — the changes in 0.2.0 and earlier releases.
+
+## Durable telemetry outbox
+
+The live state and the UDP stream are for a person watching the gateway. An
+aggregator reads the outbox, which holds normalized readings rather than frames:
+
+- `GET /api/v1/telemetry/outbox?after=<seq>&limit=<n>` — readings after a
+  sequence, at most `limit` (default 500).
+- `POST /api/v1/telemetry/ack` with `{"seq": n}` — what the aggregator has
+  committed; the gateway prunes it and keeps the floor across a restart.
+- `GET /api/v1/telemetry/outbox/status` — `path`, `depth`, `base_seq`,
+  `last_seq`, `dropped`.
+
+A reading is one signal of one device:
+`{"seq","area_id","node_id","field","value","status","received_ms"}`. The
+generated node firmware writes a module field as `m<index>.<field>`; the live
+page lists those in its `sensors` object and the frames history. `OUTBOX_TOKEN`
+requires a bearer token when a deployment names one, and `OUTBOX_MAX_ROWS`
+bounds what waits for an aggregator.

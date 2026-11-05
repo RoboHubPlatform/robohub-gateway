@@ -2,7 +2,7 @@
 
 All notable changes to this module are recorded here, one section per release.
 
-## [Unreleased]
+## [0.4.0] - 2026-11-05
 
 The gateway has a durable telemetry outbox. It normalizes each accepted reading
 to one record per signal, assigns a sequence that survives a restart, and serves
@@ -14,6 +14,11 @@ written in batches and acked by sequence, which is what lets Mesh keep a series
 without losing readings across a restart. The feed can require a bearer token
 (`OUTBOX_TOKEN`), and a network device the gateway polls now emits its state and
 power into the same feed rather than only into the gateway's live state.
+
+The live listing now understands the generic `m<index>.<field>` readings the
+generated node firmware publishes: `/api/v1/nodes` carries a `sensors` object,
+the node table shows the module temperature rather than the legacy zero spot
+field, and a SensorReading adds a row to the frames history.
 
 ## [0.3.1] - 2026-11-02
 
