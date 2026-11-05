@@ -22,6 +22,7 @@ include "gateway/ingest.rho"
 include "gateway/stream.rho"
 include "gateway/history.rho"
 include "gateway/devices.rho"
+include "gateway/outbox.rho"
 include "gateway/state.rho"
 
 import std.web.http
@@ -32,6 +33,9 @@ route GET  "/export/frames/{count}/csv" => export_frames_csv
 route GET  "/api/v1/telemetry/temperature" => latest_temperature
 route GET  "/api/v1/telemetry/power" => latest_power
 route GET  "/api/v1/telemetry/state" => latest_state
+route GET  "/api/v1/telemetry/outbox" => outbox_fetch
+route POST "/api/v1/telemetry/ack" => outbox_ack
+route GET  "/api/v1/telemetry/outbox/status" => outbox_status
 route GET  "/api/v1/nodes" => nodes
 route GET  "/api/v1/nodes/{area}/{node}/diagnostics" => device_diagnostics
 route POST "/api/v1/nodes/{area}/{node}/sampling-rate" => device_sampling_rate
@@ -77,6 +81,11 @@ fn init() void {
         if gateway_uplink_start(uplink) {
             print("robohub-gateway: uplink listening on port " + int_to_str(uplink) + "\n")
         }
+    }
+    if outbox_start() {
+        print("robohub-gateway: outbox " + gateway_outbox_status() + "\n")
+    } else {
+        print("robohub-gateway: outbox disabled\n")
     }
 }
 

@@ -179,3 +179,12 @@ L1 schema.
    documentation site are deployed.
 
 Phase 1 is the foundation: every later phase speaks the schemas it defines.
+
+## Telemetry feed
+
+The live state, the in-memory frame history and the UDP stream are for a person
+watching the gateway. The outbox is for a service: it holds normalized readings,
+not frames, with a sequence that survives a restart, a page endpoint and an
+ack. A consumer stores the sequence it has committed and reads everything after
+it, which makes the feed at-least-once without making the gateway remember every
+consumer.

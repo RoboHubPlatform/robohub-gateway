@@ -1,0 +1,84 @@
+module gateway.outbox
+
+// The durable feed an aggregator reads.
+//
+// A frame is what a node writes; a reading is one signal of one device at one
+// moment. The outbox holds readings, not frames, so a consumer asks for a
+// series by the name a manifest declared and does not have to decode the wire.
+// The sequence is per gateway and monotonic across a restart, which is what
+// makes a pull at-least-once: the aggregator stores what it has committed and
+// asks for everything after it.
+
+// outbox_start opens the outbox named by OUTBOX_PATH, or the gateway's default.
+fn outbox_start() bool {
+    return gateway_outbox_open(getenv("OUTBOX_PATH"))
+}
+
+// outbox_authorized checks the bearer token when the deployment names one. An
+// unset token leaves the feed open, which is what a gateway on a private link
+// wants while a token is being introduced.
+fn outbox_authorized(req: Request) bool {
+    let expected: string = getenv("OUTBOX_TOKEN")
+    if expected == "" {
+        return true
+    }
+    if !has_header(req, "Authorization") {
+        return false
+    }
+    return header_str(req, "Authorization") == "Bearer " + expected
+}
+
+fn outbox_unauthorized() Response {
+    return json(401, "{\"ok\":false,\"error\":\"unauthorized\"}")
+}
+
+// outbox_emit records one reading. The field name is the one a device manifest
+// uses, so a temperature is `temperature_c` and a power figure is
+// `pv_power_w`. The gateway's wall clock is the received time because a node's
+// own timestamp is its uptime, not a calendar.
+fn outbox_emit(area: u32, node: u32, field_name: string, value: f32, status: u32) u32 {
+    return gateway_outbox_append(area, node, field_name, value, status, gateway_wall_time_ms())
+}
+
+// outbox_emit_u32 records a reading that is already a whole number, such as a
+// switch state. It is the same record; only the spelling of the value differs.
+fn outbox_emit_u32(area: u32, node: u32, field_name: string, value: u32, status: u32) u32 {
+    return gateway_outbox_append_u32(area, node, field_name, value, status, gateway_wall_time_ms())
+}
+
+// outbox_fetch serves everything after the caller's sequence, up to a limit.
+fn outbox_fetch(req: Request) Response {
+    if !outbox_authorized(req) {
+        return outbox_unauthorized()
+    }
+    let after: u32 = u32(int_from_str(request_query_param(req, "after")))
+    var limit: u32 = u32(int_from_str(request_query_param(req, "limit")))
+    if limit == 0 {
+        limit = 500
+    }
+    return Response{ 200, gateway_outbox_fetch(after, limit), "application/json", "" }
+}
+
+// outbox_ack says the aggregator has committed everything up to seq, which is
+// what lets the gateway prune. The sequence may come in the body or the query.
+fn outbox_ack(req: Request) Response {
+    if !outbox_authorized(req) {
+        return outbox_unauthorized()
+    }
+    let body: string = request_body(req)
+    var seq: u32 = u32(int_from_str(request_query_param(req, "seq")))
+    if seq == 0 {
+        seq = u32(int_from_str(device_json_number(body, "seq")))
+    }
+    let removed: u32 = gateway_outbox_ack(seq)
+    return json(200, "{\"ack\":" + int_to_str(seq) +
+        ",\"removed\":" + int_to_str(removed) + "}")
+}
+
+// outbox_status says how far the feed has got and how much is waiting.
+fn outbox_status(req: Request) Response {
+    if !outbox_authorized(req) {
+        return outbox_unauthorized()
+    }
+    return Response{ 200, gateway_outbox_status(), "application/json", "" }
+}

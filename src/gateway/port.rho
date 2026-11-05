@@ -81,3 +81,18 @@ extern fn gateway_http_post(url: string, body: string, timeout_ms: u32) bool
 extern fn gateway_rpc_register(tx: u32) void
 extern fn gateway_rpc_wait(tx: u32, timeout_ms: u32) string
 extern fn gateway_rpc_signal(tx: u32, payload: string) bool
+
+// The telemetry outbox: a durable, sequenced feed for the aggregator.
+//
+// The gateway records one normalized reading per signal, not one per frame: a
+// PowerReading becomes one record per valid field, and a StateReading becomes
+// one per valid state. The aggregator asks for what comes after the last
+// sequence it stored and acks what it has committed, so a Mesh restart does not
+// lose a reading and an ack is what lets the gateway prune.
+extern fn gateway_outbox_open(path: string) bool
+extern fn gateway_outbox_append(area: u32, node: u32, field_name: string, value: f32, status: u32, received_ms: string) u32
+extern fn gateway_outbox_fetch(after: u32, limit: u32) string
+extern fn gateway_outbox_ack(seq: u32) u32
+extern fn gateway_outbox_status() string
+extern fn gateway_outbox_append_u32(area: u32, node: u32, field_name: string, value: u32, status: u32, received_ms: string) u32
+extern fn gateway_f32_from_str(text: string) f32

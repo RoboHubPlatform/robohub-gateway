@@ -30,6 +30,9 @@ fn ingest_frame(encoded: string) void {
         if frame.msg_id == MESSAGE_ID_STATE_READING {
             handle_state_reading(frame.payload)
         }
+        if frame.msg_id == MESSAGE_ID_SENSOR_READING {
+            handle_sensor_reading(frame.payload)
+        }
         return
     }
 
