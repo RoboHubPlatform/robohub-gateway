@@ -144,13 +144,76 @@ fn nodes(req: Request) Response {
 // device whose smoke has been run carries its last diagnostic too, so a listing
 // says both what it last read and whether it is well. A power device carries its
 // power and energy figures instead of a spot temperature.
+fn text_ends_with(value: string, suffix: string) bool {
+    if strlen(value) < strlen(suffix) {
+        return false
+    }
+    return str_slice(value, u32(strlen(value)) - u32(strlen(suffix)),
+        u32(strlen(suffix))) == suffix
+}
+
+// node_temperature prefers a generic module reading (m<index>.temperature_c)
+// over the legacy spot field. The firmware that fitted the module publishes the
+// prefixed field; a board flashed before that change published the bare one.
+fn node_temperature(key: u32) f32 {
+    let fields: string = gateway_state_fields(device_suffix(key, "."))
+    var rest: string = fields
+    while rest != "" {
+        let at: i32 = str_index_of(rest, "\n")
+        var line: string = rest
+        if at < 0 {
+            rest = ""
+        } else {
+            line = str_slice(rest, 0, u32(at))
+            rest = str_slice(rest, u32(at) + 1, u32(strlen(rest)) - u32(at) - 1)
+        }
+        if text_ends_with(line, ".temperature_c") {
+            return gateway_state_get_f32(device_suffix(key, "." + line))
+        }
+    }
+    return gateway_state_get_f32(device_suffix(key, ".temperature_c"))
+}
+
+fn node_sensors_json(key: u32) string {
+    let fields: string = gateway_state_fields(device_suffix(key, "."))
+    var readings: string = ""
+    var rest: string = fields
+    while rest != "" {
+        let at: i32 = str_index_of(rest, "\n")
+        var line: string = rest
+        if at < 0 {
+            rest = ""
+        } else {
+            line = str_slice(rest, 0, u32(at))
+            rest = str_slice(rest, u32(at) + 1, u32(strlen(rest)) - u32(at) - 1)
+        }
+        if line == "" {
+            continue
+        }
+        if readings != "" {
+            readings = readings + ","
+        }
+        readings = readings + "\"" + line + "\":" +
+            gateway_f32_str(gateway_state_get_f32(device_suffix(key, "." + line)))
+    }
+    if readings == "" {
+        return ""
+    }
+    return ",\"sensors\":{" + readings + "}"
+}
+
 fn node_reading(key: u32) string {
     var body: string = "{\"area_id\":" + int_to_str(device_area(key)) +
         ",\"node_id\":" + int_to_str(device_node(key)) +
-        ",\"temperature_c\":" + gateway_f32_str(gateway_state_get_f32(device_suffix(key, ".temperature_c"))) +
+        ",\"temperature_c\":" + gateway_f32_str(node_temperature(key)) +
         ",\"status\":\"" + status_text(gateway_state_get_u32(device_suffix(key, ".status"))) +
         "\",\"last_updated_ms\":" + int_to_str(gateway_state_get_u32(device_suffix(key, ".last_updated_ms"))) +
         ",\"received_at_ms\":" + received_at(key)
+
+    let sensors: string = node_sensors_json(key)
+    if sensors != "" {
+        body = body + sensors
+    }
 
     if gateway_state_get_u32(device_suffix(key, ".has_power")) != 0 {
         body = body + power_json(key)
@@ -259,7 +322,7 @@ fn home_with_limit(req: Request, limit: u32) Response {
         let status: string = status_text(gateway_state_get_u32(device_suffix(key, ".status")))
         rows = rows + "<tr><td>" + int_to_str(device_area(key)) +
             "</td><td>" + int_to_str(device_node(key)) +
-            "</td><td>" + gateway_f32_str(gateway_state_get_f32(device_suffix(key, ".temperature_c"))) +
+            "</td><td>" + gateway_f32_str(node_temperature(key)) +
             "</td><td class=\"status-" + status + "\">" + status +
             "</td><td><span class=\"local-time\" data-ms=\"" +
             received_at(key) + "\" title=\"" +

@@ -96,3 +96,4 @@ extern fn gateway_outbox_ack(seq: u32) u32
 extern fn gateway_outbox_status() string
 extern fn gateway_outbox_append_u32(area: u32, node: u32, field_name: string, value: u32, status: u32, received_ms: string) u32
 extern fn gateway_f32_from_str(text: string) f32
+extern fn gateway_state_fields(prefix: string) string
