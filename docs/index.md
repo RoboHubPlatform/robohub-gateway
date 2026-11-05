@@ -91,3 +91,35 @@ when there is not.
 | `REST_PORT` | `8080` | the REST listener, a port; `RHO_HTTP_ADDR` overrides it |
 | `GATEWAY_MODE` | `master` | `node`, `edge`, `relay` or `master` |
 | `GATEWAY_AREA` | `1` | the area this gateway speaks for |
+| `OUTBOX_PATH` | `~/.rho/robohub/gateway-outbox.jsonl` | the durable reading feed |
+| `OUTBOX_MAX_ROWS` | `200000` | how many unacked readings are retained before the oldest are dropped |
+| `OUTBOX_TOKEN` | unset | a bearer token the outbox endpoints require; unset leaves them open on a private link |
+
+## The telemetry outbox
+
+The gateway is also the edge recorder. Every accepted reading is normalized to
+one record per signal — a `PowerReading` becomes one record per valid field, a
+`StateReading` one per valid state, a `SensorReading` one for the field it
+names — and appended to a durable outbox with a per-gateway sequence.
+
+An aggregator reads a page, commits it, and acknowledges the sequence, which is
+what lets the gateway prune:
+
+- `GET /api/v1/telemetry/outbox?after=<seq>&limit=<n>` — the readings after
+  `after`, at most `limit` (default 500). A record is
+  `{"seq","area_id","node_id","field","value","status","received_ms"}`.
+- `POST /api/v1/telemetry/ack` — `{"seq": n}`; removes what the aggregator has
+  committed and records the floor so a restart does not replay it.
+- `GET /api/v1/telemetry/outbox/status` — `path`, `depth`, `base_seq`,
+  `last_seq` and `dropped`.
+
+The sequence continues across a restart, including after the outbox has been
+emptied, and a repeated page is harmless: the aggregator keys a reading by
+gateway and sequence. The file is written through a buffered writer and synced
+every two seconds or every hundred readings, so a board's eMMC sees batches
+rather than one write per sample. `OUTBOX_MAX_ROWS` bounds what is kept when no
+aggregator is reachable; the oldest records are dropped and counted.
+
+The same feed carries a network device the gateway polls. A Shelly's state and
+power are written as `state` and `power_w` under the gateway's own device id, so
+the history exists before the device is folded into a plan.

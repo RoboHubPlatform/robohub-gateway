@@ -78,6 +78,9 @@ fn record_reading(area: u32, node: u32, timestamp: u32, temperature: f32, status
 
     history_record("reading", key, timestamp, temperature, status, "")
     stream_publish(key, timestamp, temperature, status)
+    // The outbox is the durable feed: one record per signal, so an aggregator
+    // can store a series without decoding the frame.
+    outbox_emit(area, node, "temperature_c", temperature, status)
 }
 
 // stream_publish renders one PlotJuggler record and sends it. The device — its
@@ -131,6 +134,34 @@ fn record_power(message: PowerReading) void {
 
     history_record("power", key, message.timestamp_ms, 0.0, u32(message.status), power_json(key))
     stream_publish_power(key, message)
+
+    // Each figure the message says it carries becomes one reading. A field
+    // whose bit is clear is absent, not zero: an inverter with no battery has
+    // no state of charge, and storing a zero would be a wrong answer.
+    let area: u32 = device_area(key)
+    let node: u32 = device_node(key)
+    let status: u32 = u32(message.status)
+    if (u32(message.valid) & POWER_FIELD_PV_POWER) != 0 {
+        outbox_emit(area, node, "pv_power_w", message.pv_power_w, status)
+    }
+    if (u32(message.valid) & POWER_FIELD_LOAD_POWER) != 0 {
+        outbox_emit(area, node, "load_power_w", message.load_power_w, status)
+    }
+    if (u32(message.valid) & POWER_FIELD_GRID_POWER) != 0 {
+        outbox_emit(area, node, "grid_power_w", message.grid_power_w, status)
+    }
+    if (u32(message.valid) & POWER_FIELD_BATTERY_POWER) != 0 {
+        outbox_emit(area, node, "battery_power_w", message.battery_power_w, status)
+    }
+    if (u32(message.valid) & POWER_FIELD_BATTERY_SOC) != 0 {
+        outbox_emit(area, node, "battery_soc", message.battery_soc, status)
+    }
+    if (u32(message.valid) & POWER_FIELD_ENERGY_TODAY) != 0 {
+        outbox_emit(area, node, "energy_today_kwh", message.energy_today_kwh, status)
+    }
+    if (u32(message.valid) & POWER_FIELD_ENERGY_TOTAL) != 0 {
+        outbox_emit(area, node, "energy_total_kwh", message.energy_total_kwh, status)
+    }
 }
 
 // stream_publish_power renders one PlotJuggler record for a power device. It is
@@ -183,6 +214,16 @@ fn record_state(message: StateReading) void {
 
     history_record("state", key, message.timestamp_ms, 0.0, u32(message.status), state_json(key))
     stream_publish_state(key, message)
+
+    let area: u32 = device_area(key)
+    let node: u32 = device_node(key)
+    let status: u32 = u32(message.status)
+    if (u32(message.valid) & STATE_FIELD_SWITCH_STATE) != 0 {
+        outbox_emit_u32(area, node, "state", u32(message.switch_state), status)
+    }
+    if (u32(message.valid) & STATE_FIELD_SETPOINT) != 0 {
+        outbox_emit(area, node, "setpoint", message.setpoint, status)
+    }
 }
 
 // stream_publish_state renders one PlotJuggler record for a device's state.
@@ -196,4 +237,47 @@ fn stream_publish_state(key: u32, message: StateReading) bool {
         ",\"setpoint\":" + gateway_f32_str(message.setpoint) +
         ",\"status\":" + int_to_str(u32(message.status)) + "}\n"
     return gateway_udp_send(line)
+}
+
+// c_string trims a fixed-width wire string at its first zero. A SensorReading's
+// field is padded to the wire width, and the padding is not part of the name.
+fn c_string(value: string) string {
+    var out: string = ""
+    var i: u32 = 0
+    while i < u32(strlen(value)) {
+        if str_at(value, i) == u8(0) {
+            break
+        }
+        out = out + str_slice(value, i, 1)
+        i = i + 1
+    }
+    return out
+}
+
+fn handle_sensor_reading(payload: string) void {
+    if !sensor_reading_valid(payload) {
+        return
+    }
+    let message: SensorReading = sensor_reading_unmarshal(payload)
+    record_sensor(message)
+}
+
+// record_sensor stores one named measurement under the field the device
+// declared. It is the generic path: a new sensor is a manifest and a publish
+// call, not a new message and a new branch here.
+fn record_sensor(message: SensorReading) void {
+    let field_name: string = c_string(message.field)
+    if field_name == "" {
+        return
+    }
+    let key: u32 = device_key(u32(message.device.area_id), u32(message.device.node_id))
+    gateway_node_seen(key)
+    gateway_state_set_u32(device_suffix(key, ".has_sensor"), 1)
+    gateway_state_set_f32(device_suffix(key, "." + field_name), message.value)
+    gateway_state_set_u32(device_suffix(key, ".status"), u32(message.status))
+    gateway_state_set_u32(device_suffix(key, ".last_updated_ms"), message.timestamp_ms)
+    gateway_state_set(device_suffix(key, ".received_at_ms"), gateway_wall_time_ms())
+    gateway_state_set_u32("frames", gateway_state_get_u32("frames") + 1)
+    outbox_emit(u32(message.device.area_id), u32(message.device.node_id),
+        field_name, message.value, u32(message.status))
 }

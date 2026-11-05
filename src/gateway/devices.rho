@@ -141,6 +141,13 @@ fn device_list(req: Request) Response {
     return json(200, body + "]")
 }
 
+fn device_state_u32(state: string) u32 {
+    if state == "on" {
+        return 1
+    }
+    return 0
+}
+
 fn device_poll(req: Request) Response {
     let id: u32 = int_from_str(param(req, "id"))
     let address: string = gateway_state_get(device_field_key(id, "address"))
@@ -154,10 +161,12 @@ fn device_poll(req: Request) Response {
     let state: string = device_json_bool(text, "output")
     if strlen(state) > 0 {
         gateway_state_set(device_field_key(id, "state"), state)
+        outbox_emit_u32(gateway_area(), id, "state", device_state_u32(state), 0)
     }
     let power: string = device_json_number(text, "apower")
     if strlen(power) > 0 {
         gateway_state_set(device_field_key(id, "power_w"), power)
+        outbox_emit(gateway_area(), id, "power_w", gateway_f32_from_str(power), 0)
     }
     gateway_state_set(device_field_key(id, "updated"), gateway_wall_time_ms())
     return json(200, "{\"success\":true,\"device\":" + device_one(id) + "}")
@@ -185,5 +194,6 @@ fn devices_switch(req: Request) Response {
     }
     gateway_state_set(device_field_key(id, "state"), state)
     gateway_state_set(device_field_key(id, "updated"), gateway_wall_time_ms())
+    outbox_emit_u32(gateway_area(), id, "state", device_state_u32(state), 0)
     return json(200, "{\"success\":true,\"device\":" + device_one(id) + "}")
 }

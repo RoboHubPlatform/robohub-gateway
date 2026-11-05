@@ -24,6 +24,7 @@ enum MessageId {
     READING = 513                   // 0x0201, L1: a reading carried up
     POWER_READING = 514             // 0x0202, both levels: a power device's reading
     STATE_READING = 515             // 0x0203, both levels: a device's state
+    SENSOR_READING = 516            // 0x0204, both levels: a device's named measurement
     CONTROL_REQUEST = 769           // 0x0301
     CONTROL_RESPONSE = 770          // 0x0302
     DIAG_REQUEST = 1025             // 0x0401
@@ -231,4 +232,20 @@ message StateReading {
     valid: u16
     switch_state: u16
     setpoint: f32
+}
+
+// A device's own measurement, named by the device.
+//
+// Telemetry is one temperature and PowerReading is a fixed set of power
+// figures. A humidity sensor, a pressure sensor or a vendor-specific probe has
+// neither shape, and adding a message per kind would make the wire grow with
+// every part. A SensorReading names the field the manifest declares and carries
+// one value, so a new sensor is a manifest and a publish call rather than a
+// schema and a firmware rebuild on the gateway.
+message SensorReading {
+    device: DeviceId
+    timestamp_ms: u32
+    status: u16
+    field: string
+    value: f32
 }
