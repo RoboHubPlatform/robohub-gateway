@@ -1,0 +1,36 @@
+module gateway.security
+
+// Gateway token enforcement.
+//
+// A deployment that names GATEWAY_TOKEN (or OUTBOX_TOKEN) requires the
+// bearer header on every write path: frame ingestion, device registration,
+// polling, switching, sampling-rate and the outbox. The same token protects
+// the outbox from consumers and the gateway from a LAN caller that would
+// otherwise be free to push frames or flip a relay.
+//
+// A gateway that names no token stays open, because a link on a private bus or
+// behind a reverse proxy may already be bounded; the same deployment should
+// add the token as soon as it is reachable on a shared network.
+
+fn gateway_token() string {
+    let token: string = getenv("GATEWAY_TOKEN")
+    if token == "" {
+        token = getenv("OUTBOX_TOKEN")
+    }
+    return token
+}
+
+fn gateway_authorized(req: Request) bool {
+    let expected: string = gateway_token()
+    if expected == "" {
+        return true
+    }
+    if !has_header(req, "Authorization") {
+        return false
+    }
+    return header_str(req, "Authorization") == "Bearer " + expected
+}
+
+fn gateway_denied() Response {
+    return json(401, "{\"success\":false,\"error\":\"unauthorized\"}")
+}

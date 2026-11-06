@@ -18,14 +18,7 @@ fn outbox_start() bool {
 // unset token leaves the feed open, which is what a gateway on a private link
 // wants while a token is being introduced.
 fn outbox_authorized(req: Request) bool {
-    let expected: string = getenv("OUTBOX_TOKEN")
-    if expected == "" {
-        return true
-    }
-    if !has_header(req, "Authorization") {
-        return false
-    }
-    return header_str(req, "Authorization") == "Bearer " + expected
+    return gateway_authorized(req)
 }
 
 fn outbox_unauthorized() Response {

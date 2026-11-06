@@ -278,7 +278,7 @@ fn record_sensor(message: SensorReading) void {
     gateway_state_set_u32(device_suffix(key, ".last_updated_ms"), message.timestamp_ms)
     gateway_state_set(device_suffix(key, ".received_at_ms"), gateway_wall_time_ms())
     gateway_state_set_u32("frames", gateway_state_get_u32("frames") + 1)
-    history_record("sensor", key, message.timestamp_ms, message.value,
+    history_record("reading", key, message.timestamp_ms, message.value,
         u32(message.status), "field " + field_name)
     outbox_emit(u32(message.device.area_id), u32(message.device.node_id),
         field_name, message.value, u32(message.status))

@@ -96,6 +96,9 @@ fn device_count() u32 {
 }
 
 fn device_register(req: Request) Response {
+    if !gateway_authorized(req) {
+        return gateway_denied()
+    }
     let body: string = request_body(req)
     let name: string = device_form(body, "name")
     let address: string = device_form(body, "address")
@@ -149,6 +152,9 @@ fn device_state_u32(state: string) u32 {
 }
 
 fn device_poll(req: Request) Response {
+    if !gateway_authorized(req) {
+        return gateway_denied()
+    }
     let id: u32 = int_from_str(param(req, "id"))
     let address: string = gateway_state_get(device_field_key(id, "address"))
     if id == 0 || strlen(address) == 0 {
@@ -173,6 +179,9 @@ fn device_poll(req: Request) Response {
 }
 
 fn devices_switch(req: Request) Response {
+    if !gateway_authorized(req) {
+        return gateway_denied()
+    }
     let id: u32 = int_from_str(param(req, "id"))
     let body: string = request_body(req)
     var state: string = device_form(body, "state")
