@@ -389,3 +389,19 @@ generated node firmware writes a module field as `m<index>.<field>`; the live
 page lists those in its `sensors` object and the frames history. `OUTBOX_TOKEN`
 requires a bearer token when a deployment names one, and `OUTBOX_MAX_ROWS`
 bounds what waits for an aggregator.
+## Uplink interface and write-path token
+
+A gateway with an uplink may confine it to one interface:
+
+```sh
+UPLINK_BIND=127.0.0.1   # loopback only
+UPLINK_BIND=192.168.50.2  # one LAN interface
+```
+
+Without it, the uplink listens on every interface, which is the right default
+for a relay mesh and the wrong one for a shared network.
+
+All write paths — `/api/v1/frames`, device registration, polling, switching,
+sampling-rate, and the outbox — require the bearer token when a deployment
+sets `GATEWAY_TOKEN` (or `OUTBOX_TOKEN`). A gateway with no token stays open,
+which is how a private bus or a loopback-only link is run.

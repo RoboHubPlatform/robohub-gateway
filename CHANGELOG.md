@@ -39,3 +39,10 @@ The gateway page shows a frame history, newest first, with selectable windows
 of 10, 25, 50, 100, 500 and 1000 rows and CSV export. A node's `timestamp_ms`
 is its own uptime; the gateway records the wall-clock `received_at_ms` beside
 it and renders that as local date/time. Page and API carry both.
+
+## [0.4.1] - 2026-11-06
+
+Security: all write paths (frames, device registration, polling, switching,
+sampling-rate, outbox) now require the bearer token when GATEWAY_TOKEN or
+OUTBOX_TOKEN is set. The uplink honours UPLINK_BIND. Frames history no longer
+records redundant sensor entries.
