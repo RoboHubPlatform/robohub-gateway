@@ -235,12 +235,12 @@ this gateway decodes.
 
 ```sh
 # 1. Build and flash the node (hold BOOTSEL while plugging the board in).
-cd ${RHO_WORKSPACE}/robohub-drivers/examples/temperature/ds18b20/c/telemetry
+cd "$ROBOHUB_WORKSPACE/robohub-drivers/examples/temperature/ds18b20/c/telemetry"
 rho build -target pico2w .
 rho flash -target pico2w -project . build/output/telemetry.elf
 
 # 2. The gateway, on the host the board is plugged into.
-cd ${RHO_WORKSPACE}/robohub-gateway
+cd "$ROBOHUB_WORKSPACE/robohub-gateway"
 rho run .                       # SERIAL_PORT defaults to /dev/ttyACM0
 
 # 3. Watch it.

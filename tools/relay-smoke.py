@@ -28,9 +28,19 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 GATEWAY_BIN = os.environ.get("GATEWAY_BIN", os.path.join(ROOT, "build", "robohub-gateway"))
+# The workspace is where the sibling checkouts sit: ROBOHUB_WORKSPACE (or
+# RHO_WORKSPACE) when set, otherwise the directory that holds this repository.
+WORKSPACE = (
+    os.environ.get("ROBOHUB_WORKSPACE")
+    or os.environ.get("RHO_WORKSPACE")
+    or os.path.dirname(ROOT)
+)
 RELAY_BIN = os.environ.get(
     "RELAY_BIN",
-    "${RHO_WORKSPACE}/robohub-drivers/examples/gateway/c/relay-host/build/output/relay_host",
+    os.path.join(
+        WORKSPACE, "robohub-drivers", "examples", "gateway", "c", "relay-host",
+        "build", "output", "relay_host",
+    ),
 )
 HOST = "127.0.0.1"
 REST_PORT = 18084
