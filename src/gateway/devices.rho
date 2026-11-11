@@ -95,6 +95,24 @@ fn device_count() u32 {
     return gateway_state_get_u32("devices")
 }
 
+// device_find_by_uid is the device already registered under a stable id, or 0
+// when the id is free. The numeric id is a local index; the uid is what a
+// consumer can key a series on, so two registrations cannot share it.
+fn device_find_by_uid(uid: string) u32 {
+    if strlen(uid) == 0 {
+        return 0
+    }
+    let count: u32 = device_count()
+    var i: u32 = 1
+    while i <= count {
+        if gateway_state_get(device_field_key(i, "device_id")) == uid {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
 fn device_register(req: Request) Response {
     if !gateway_authorized(req) {
         return gateway_denied()
@@ -102,8 +120,18 @@ fn device_register(req: Request) Response {
     let body: string = request_body(req)
     let name: string = device_form(body, "name")
     let address: string = device_form(body, "address")
+    var device_id: string = device_form(body, "device_id")
     if strlen(name) == 0 || strlen(address) == 0 {
         return json(400, "{\"success\":false,\"error\":\"name and address are required\"}")
+    }
+    // A device that names no id is still given one that is stable and unique:
+    // its transport and address. A client that knows the hardware id passes it
+    // and the same value cannot be registered twice.
+    if strlen(device_id) == 0 {
+        device_id = device_form(body, "transport") + ":" + address
+    }
+    if device_find_by_uid(device_id) != 0 {
+        return json(409, "{\"success\":false,\"error\":\"device_id is already registered\"}")
     }
     let id: u32 = device_count() + 1
     gateway_state_set_u32("devices", id)
@@ -111,7 +139,7 @@ fn device_register(req: Request) Response {
     gateway_state_set(device_field_key(id, "kind"), device_form(body, "kind"))
     gateway_state_set(device_field_key(id, "transport"), device_form(body, "transport"))
     gateway_state_set(device_field_key(id, "address"), address)
-    gateway_state_set(device_field_key(id, "device_id"), device_form(body, "device_id"))
+    gateway_state_set(device_field_key(id, "device_id"), device_id)
     gateway_state_set(device_field_key(id, "state"), "unknown")
     gateway_state_set(device_field_key(id, "power_w"), "0")
     gateway_state_set(device_field_key(id, "updated"), gateway_wall_time_ms())

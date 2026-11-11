@@ -32,7 +32,10 @@ handler share.
   deployed in, the area it speaks for, its uptime and what it has carried.
 
 - `POST /api/v1/devices` — register a network device (name, kind, transport,
-  address, device id).
+  address, device id). The id is the device's stable identity: a client that
+  knows the hardware id passes it, one that does not gets `transport:address`,
+  and a second registration of the same id is refused rather than becoming a
+  second series.
 - `GET /api/v1/devices` — the registered devices and their latest state.
 - `POST /api/v1/devices/{id}/poll` — read an HTTP device's status.
 - `POST /api/v1/devices/{id}/switch` — switch an HTTP device on or off; the
