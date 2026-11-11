@@ -24,14 +24,18 @@ which binary is built:
 ## Container
 
 The gateway and the Rho toolchain are separate checkouts, so the image is built
-from two contexts — this repository, and `rho` named as a build context. Nothing
-is fetched from a network:
+from two contexts — this repository, and `rho` as a second one, found in the
+workspace (`$RHO_WORKSPACE`, or the directory that holds this repository). Nothing
+is fetched from a network. The image is built by `rho deploy`, from the
+`container` target in `targets/container.json`:
 
 ```sh
-docker build -f deploy/Dockerfile \
-    --build-context rho=/path/to/rho \
-    -t <dockerhub-user>/robohub-gateway .
+rho deploy -target container -docker -build-only
+RH_DEPLOY_DOCKER_IMAGE=<dockerhub-user>/robohub-gateway \
+    rho deploy -target container -docker -build-only -push   # and publish it
 ```
+
+`-n` prints the steps and runs nothing.
 
 ## systemd
 

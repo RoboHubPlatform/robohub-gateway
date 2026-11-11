@@ -71,3 +71,6 @@ docs:
     - docs/index.md
     - docs/architecture.md
     - docs/deployment.md
+
+hardware:
+  targets: targets/

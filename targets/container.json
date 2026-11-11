@@ -1,0 +1,16 @@
+{
+  "kind": "board",
+  "name": "container",
+  "comment": "The gateway as a container image: built here and, when asked, pushed to a registry. There is no host to copy it to, so this target declares only the image; `rho deploy -docker` to a board uses that board's own docker block instead.",
+  "arch": "native",
+  "family": "host",
+  "deploy": {
+    "docker": {
+      "file": "deploy/Dockerfile",
+      "image": "robohub-gateway",
+      "tag": "latest",
+      "contexts": {"rho": "${RHO_WORKSPACE}/rho"},
+      "comment": "the gateway and the Rho toolchain are separate checkouts, so the image is built from two contexts, and the second is found in the workspace. RH_DEPLOY_DOCKER_IMAGE and _TAG name the image for a registry: RH_DEPLOY_DOCKER_IMAGE=<user>/robohub-gateway"
+    }
+  }
+}

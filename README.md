@@ -324,7 +324,7 @@ A container image, a systemd unit and an nginx vhost, as the registry is
 deployed:
 
 ```sh
-docker build -f deploy/Dockerfile --build-context rho=/path/to/rho -t <user>/robohub-gateway .
+rho deploy -target container -docker -build-only
 ```
 
 [docs/deployment.md](docs/deployment.md) covers the modes, the second (uplink)
