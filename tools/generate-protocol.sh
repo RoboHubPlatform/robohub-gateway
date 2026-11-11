@@ -21,6 +21,6 @@
 #     tools/generate-protocol.sh
 set -eu
 
-rho protocol generate --target rho --out src/gateway/link  schemas/link.rho
-rho protocol generate --target rho --out src/gateway/uplink schemas/uplink.rho
-rho protocol generate --target rho --out src/gateway/wire   schemas/gateway.rho
+rho protocol generate --target rho --platform robohub --out src/gateway/link  schemas/link.rho
+rho protocol generate --target rho --platform robohub --out src/gateway/uplink schemas/uplink.rho
+rho protocol generate --target rho --platform robohub --out src/gateway/wire   schemas/gateway.rho
