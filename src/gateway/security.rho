@@ -1,36 +1,42 @@
 module gateway.security
 
-// Gateway token enforcement.
+// Who may read this gateway and who may command it.
 //
-// A deployment that names GATEWAY_TOKEN (or OUTBOX_TOKEN) requires the
-// bearer header on every write path: frame ingestion, device registration,
-// polling, switching, sampling-rate and the outbox. The same token protects
-// the outbox from consumers and the gateway from a LAN caller that would
-// otherwise be free to push frames or flip a relay.
+// The gateway is a relying party of keeper. Every route but /healthz is behind
+// the auth middleware, which verifies a short-lived ES256 token for the audience
+// `gateway`, removes any identity headers a caller sent, and sets them from the
+// token. What a verified caller may do is in the token's scopes, named for this
+// gateway's id (GATEWAY_ID, "default" when unset):
 //
-// A gateway that names no token stays open, because a link on a private bus or
-// behind a reverse proxy may already be bounded; the same deployment should
-// add the token as soon as it is reachable on a shared network.
+//   gateway:<id>:read      telemetry, the outbox, nodes, diagnostics, frames
+//   gateway:<id>:command   switching, sampling rate, commands, registering and
+//                          polling devices, injecting frames, pumping the uplink
+//
+// `gateway:<id>:*`, `gateway:*` and `*` hold both. There is no static token: a
+// token that leaks expires in minutes, and one gateway's token is not another's.
 
-fn gateway_token() string {
-    let token: string = getenv("GATEWAY_TOKEN")
-    if token == "" {
-        token = getenv("OUTBOX_TOKEN")
+fn gateway_id() string {
+    let id: string = getenv("GATEWAY_ID")
+    if id == "" {
+        return "default"
     }
-    return token
+    return id
 }
 
-fn gateway_authorized(req: Request) bool {
-    let expected: string = gateway_token()
-    if expected == "" {
-        return true
-    }
-    if !has_header(req, "Authorization") {
-        return false
-    }
-    return header_str(req, "Authorization") == "Bearer " + expected
+fn gateway_scope_held(scopes: string, scope: string) bool {
+    return str_index_of("," + scopes + ",", "," + scope + ",") >= 0
+}
+
+// gateway_allowed is whether the verified caller holds `action` on this gateway.
+fn gateway_allowed(req: Request, action: string) bool {
+    let scopes: string = header_str(req, "X-Rho-Scopes")
+    let id: string = gateway_id()
+    return gateway_scope_held(scopes, "gateway:" + id + ":" + action) ||
+        gateway_scope_held(scopes, "gateway:" + id + ":*") ||
+        gateway_scope_held(scopes, "gateway:*") ||
+        gateway_scope_held(scopes, "*")
 }
 
 fn gateway_denied() Response {
-    return json(401, "{\"success\":false,\"error\":\"unauthorized\"}")
+    return json(403, "{\"success\":false,\"error\":\"insufficient scope\"}")
 }

@@ -386,10 +386,10 @@ aggregator reads the outbox, which holds normalized readings rather than frames:
 A reading is one signal of one device:
 `{"seq","area_id","node_id","field","value","status","received_ms"}`. The
 generated node firmware writes a module field as `m<index>.<field>`; the live
-page lists those in its `sensors` object and the frames history. `OUTBOX_TOKEN`
-requires a bearer token when a deployment names one, and `OUTBOX_MAX_ROWS`
-bounds what waits for an aggregator.
-## Uplink interface and write-path token
+page lists those in its `sensors` object and the frames history. Reading it takes
+a token with `gateway:<id>:read`, and `OUTBOX_MAX_ROWS` bounds what waits for an
+aggregator.
+## Uplink interface and access
 
 A gateway with an uplink may confine it to one interface:
 
@@ -401,7 +401,10 @@ UPLINK_BIND=192.168.50.2  # one LAN interface
 Without it, the uplink listens on every interface, which is the right default
 for a relay mesh and the wrong one for a shared network.
 
-All write paths — `/api/v1/frames`, device registration, polling, switching,
-sampling-rate, and the outbox — require the bearer token when a deployment
-sets `GATEWAY_TOKEN` (or `OUTBOX_TOKEN`). A gateway with no token stays open,
-which is how a private bus or a loopback-only link is run.
+Every route but `/healthz` takes a short-lived token keeper issued for the audience
+`gateway`, verified with keeper's public key (`RHO_AUTH_PUBLIC_KEY`). Its scopes
+name this gateway (`GATEWAY_ID`) and what the caller may do: `gateway:<id>:read`
+for telemetry, the outbox, nodes and diagnostics; `gateway:<id>:command` for
+frames, device registration, polling, switching, sampling rate and the uplink.
+There is no static token. Mesh, which reads and commands its gateways, holds a
+keeper client credential and asks for these tokens itself.

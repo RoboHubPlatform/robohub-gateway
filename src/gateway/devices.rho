@@ -114,7 +114,7 @@ fn device_find_by_uid(uid: string) u32 {
 }
 
 fn device_register(req: Request) Response {
-    if !gateway_authorized(req) {
+    if !gateway_allowed(req, "command") {
         return gateway_denied()
     }
     let body: string = request_body(req)
@@ -159,6 +159,9 @@ fn device_one(id: u32) string {
 }
 
 fn device_list(req: Request) Response {
+    if !gateway_allowed(req, "read") {
+        return gateway_denied()
+    }
     var body: string = "["
     let count: u32 = device_count()
     var i: u32 = 1
@@ -180,7 +183,7 @@ fn device_state_u32(state: string) u32 {
 }
 
 fn device_poll(req: Request) Response {
-    if !gateway_authorized(req) {
+    if !gateway_allowed(req, "command") {
         return gateway_denied()
     }
     let id: u32 = int_from_str(param(req, "id"))
@@ -207,7 +210,7 @@ fn device_poll(req: Request) Response {
 }
 
 fn devices_switch(req: Request) Response {
-    if !gateway_authorized(req) {
+    if !gateway_allowed(req, "command") {
         return gateway_denied()
     }
     let id: u32 = int_from_str(param(req, "id"))

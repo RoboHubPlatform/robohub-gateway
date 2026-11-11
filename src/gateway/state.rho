@@ -106,7 +106,7 @@ fn apply_uplink_frame(encoded: string) void {
 // uplink_pump drains the uplink and says how many frames it applied, so a
 // supervisor can drive a master that nothing else is asking yet.
 fn uplink_pump(req: Request) Response {
-    if !gateway_authorized(req) {
+    if !gateway_allowed(req, "command") {
         return gateway_denied()
     }
     let applied: u32 = drain_uplink()
@@ -116,6 +116,9 @@ fn uplink_pump(req: Request) Response {
 // latest_temperature serves the newest telemetry, from whichever device sent it
 // last, or a zero reading before any frame has arrived.
 fn latest_temperature(req: Request) Response {
+    if !gateway_allowed(req, "read") {
+        return gateway_denied()
+    }
     drain_uplink()
     let key: u32 = gateway_state_get_u32("latest_device")
     let body: string = "{\"area_id\":" + int_to_str(device_area(key)) +
@@ -128,6 +131,9 @@ fn latest_temperature(req: Request) Response {
 
 // nodes lists every device a frame has come from, with its newest values.
 fn nodes(req: Request) Response {
+    if !gateway_allowed(req, "read") {
+        return gateway_denied()
+    }
     drain_uplink()
     var body: string = "["
     let count: u32 = gateway_node_count()
@@ -266,6 +272,9 @@ fn power_json(key: u32) string {
 // latest_power serves the newest power reading, from whichever device sent it
 // last, or a zero reading before any has arrived.
 fn latest_power(req: Request) Response {
+    if !gateway_allowed(req, "read") {
+        return gateway_denied()
+    }
     drain_uplink()
     let key: u32 = gateway_state_get_u32("latest_power_device")
     let body: string = "{\"area_id\":" + int_to_str(device_area(key)) +
@@ -279,6 +288,9 @@ fn latest_power(req: Request) Response {
 // latest_state serves the newest device state, from whichever device sent it
 // last, or a zero state before any has arrived.
 fn latest_state(req: Request) Response {
+    if !gateway_allowed(req, "read") {
+        return gateway_denied()
+    }
     drain_uplink()
     let key: u32 = gateway_state_get_u32("latest_state_device")
     let body: string = "{\"area_id\":" + int_to_str(device_area(key)) +
@@ -294,6 +306,9 @@ fn latest_state(req: Request) Response {
 // diagnostics says what the gateway itself is doing: the mode it was deployed
 // in, the area it speaks for, how long it has been up, and what it has carried.
 fn diagnostics(req: Request) Response {
+    if !gateway_allowed(req, "read") {
+        return gateway_denied()
+    }
     drain_uplink()
     let body: string = "{\"mode\":\"" + gateway_mode() + "\"" +
         ",\"area_id\":" + int_to_str(gateway_area()) +
@@ -367,14 +382,23 @@ fn home_with_limit(req: Request, limit: u32) Response {
 }
 
 fn home(req: Request) Response {
+    if !gateway_allowed(req, "read") {
+        return gateway_denied()
+    }
     return home_with_limit(req, 10)
 }
 
 fn frames(req: Request) Response {
+    if !gateway_allowed(req, "read") {
+        return gateway_denied()
+    }
     return home_with_limit(req, history_limit(param(req, "count")))
 }
 
 fn export_frames_csv(req: Request) Response {
+    if !gateway_allowed(req, "read") {
+        return gateway_denied()
+    }
     let limit: u32 = history_limit(param(req, "count"))
     return Response{ 200, history_csv(limit), "text/csv; charset=utf-8", "" }
 }
@@ -387,7 +411,7 @@ fn export_frames_csv(req: Request) Response {
 // general — an opcode and an argument — so a second command is another opcode,
 // not another endpoint.
 fn set_sampling_rate(req: Request) Response {
-    if !gateway_authorized(req) {
+    if !gateway_allowed(req, "command") {
         return gateway_denied()
     }
     let interval: u32 = parse_interval_ms(request_body(req))
@@ -407,6 +431,9 @@ fn set_sampling_rate(req: Request) Response {
 // with the device, so the listing carries the last smoke as well as the last
 // reading.
 fn device_diagnostics(req: Request) Response {
+    if !gateway_allowed(req, "read") {
+        return gateway_denied()
+    }
     let area: u32 = int_from_str(param(req, "area"))
     let node: u32 = int_from_str(param(req, "node"))
     if area == 0 {
@@ -498,7 +525,7 @@ fn route_control(area: u32, node: u32, opcode: u16, argument: u32) Response {
 // device_sampling_rate changes one device's reporting interval: opcode 1, the
 // interval as the argument.
 fn device_sampling_rate(req: Request) Response {
-    if !gateway_authorized(req) {
+    if !gateway_allowed(req, "command") {
         return gateway_denied()
     }
     let area: u32 = int_from_str(param(req, "area"))
@@ -514,7 +541,7 @@ fn device_sampling_rate(req: Request) Response {
 // argument, addressed to a named device. A device's own opcodes begin at
 // CONTROL_OPCODE_VENDOR_BASE, so a custom command cannot collide with a core one.
 fn device_command(req: Request) Response {
-    if !gateway_authorized(req) {
+    if !gateway_allowed(req, "command") {
         return gateway_denied()
     }
     let area: u32 = int_from_str(param(req, "area"))
@@ -531,7 +558,7 @@ fn device_command(req: Request) Response {
 // device_switch drives a switch: opcode SET_SWITCH, the argument 1 for on and 0
 // for off.
 fn device_switch(req: Request) Response {
-    if !gateway_authorized(req) {
+    if !gateway_allowed(req, "command") {
         return gateway_denied()
     }
     let area: u32 = int_from_str(param(req, "area"))

@@ -14,15 +14,13 @@ fn outbox_start() bool {
     return gateway_outbox_open(getenv("OUTBOX_PATH"))
 }
 
-// outbox_authorized checks the bearer token when the deployment names one. An
-// unset token leaves the feed open, which is what a gateway on a private link
-// wants while a token is being introduced.
+// outbox_authorized is whether the caller may read and acknowledge the outbox.
 fn outbox_authorized(req: Request) bool {
-    return gateway_authorized(req)
+    return gateway_allowed(req, "read")
 }
 
 fn outbox_unauthorized() Response {
-    return json(401, "{\"ok\":false,\"error\":\"unauthorized\"}")
+    return json(403, "{\"ok\":false,\"error\":\"insufficient scope\"}")
 }
 
 // outbox_emit records one reading. The field name is the one a device manifest
@@ -63,13 +61,17 @@ fn outbox_ack(req: Request) Response {
     if seq == 0 {
         seq = u32(int_from_str(device_json_number(body, "seq")))
     }
-    let removed: u32 = gateway_outbox_ack(seq)
+    // The cursor is the caller's own: the subject of the token it presented.
+    let removed: u32 = gateway_outbox_ack_for(header_str(req, "X-Rho-Subject"), seq)
     return json(200, "{\"ack\":" + int_to_str(seq) +
         ",\"removed\":" + int_to_str(removed) + "}")
 }
 
 // outbox_status says how far the feed has got and how much is waiting.
 fn outbox_status(req: Request) Response {
+    if !gateway_allowed(req, "read") {
+        return gateway_denied()
+    }
     if !outbox_authorized(req) {
         return outbox_unauthorized()
     }

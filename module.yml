@@ -48,6 +48,16 @@ build:
         - name: cors
           options:
             origin: "*"
+        # Every route but /healthz takes a short-lived token keeper issued for
+        # the audience `gateway`; the scopes say which gateway and what for
+        # (src/gateway/security.rho). The public key is keeper's, copied here
+        # when the gateway is deployed; RHO_AUTH_PUBLIC_KEY names another path.
+        - name: auth
+          options:
+            issuer: keeper
+            audience: gateway
+            public_key: ~/.rho/auth/public.pem
+            skip_paths: /healthz
       files:
         - path: app.go
           role: implementation

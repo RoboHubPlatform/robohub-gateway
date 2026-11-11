@@ -96,7 +96,8 @@ when there is not.
 | `GATEWAY_AREA` | `1` | the area this gateway speaks for |
 | `OUTBOX_PATH` | `~/.rho/robohub/gateway-outbox.jsonl` | the durable reading feed |
 | `OUTBOX_MAX_ROWS` | `200000` | how many unacked readings are retained before the oldest are dropped |
-| `OUTBOX_TOKEN` | unset | a bearer token the outbox endpoints require; unset leaves them open on a private link |
+| `GATEWAY_ID` | `default` | this gateway's id; a caller's token must carry `gateway:<id>:read` or `gateway:<id>:command` |
+| `RHO_AUTH_PUBLIC_KEY` | `~/.rho/auth/public.pem` | keeper's public key, which verifies every caller's token |
 
 ## The telemetry outbox
 

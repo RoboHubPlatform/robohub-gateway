@@ -93,6 +93,7 @@ extern fn gateway_outbox_open(path: string) bool
 extern fn gateway_outbox_append(area: u32, node: u32, field_name: string, value: f32, status: u32, received_ms: string) u32
 extern fn gateway_outbox_fetch(after: u32, limit: u32) string
 extern fn gateway_outbox_ack(seq: u32) u32
+extern fn gateway_outbox_ack_for(consumer: string, seq: u32) u32
 extern fn gateway_outbox_status() string
 extern fn gateway_outbox_append_u32(area: u32, node: u32, field_name: string, value: u32, status: u32, received_ms: string) u32
 extern fn gateway_f32_from_str(text: string) f32

@@ -61,7 +61,7 @@ route POST "/api/v1/uplink/pump" => uplink_pump
 // the frame it posts is the same frame a serial link carries, so the reader,
 // the state and the stream are the same.
 fn ingest_http_frame(req: Request) Response {
-    if !gateway_authorized(req) {
+    if !gateway_allowed(req, "command") {
         return gateway_denied()
     }
     let body: string = request_body(req)
