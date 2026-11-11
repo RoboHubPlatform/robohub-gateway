@@ -16,6 +16,8 @@ module:
     keeps each node's latest state, streams telemetry to PlotJuggler over UDP,
     and serves a REST API for web clients.
 
+platform: robohub
+
 main: src/main.rho
 
 # A gateway is a long-running service, so it generates the Go server target and
