@@ -491,17 +491,23 @@ fn route_control(area: u32, node: u32, opcode: u16, argument: u32) Response {
     let tx: u32 = next_tx()
     let device: DeviceId = DeviceId { u16(area), u16(node) }
     let control: ControlRequest = ControlRequest { device, opcode, argument }
-    let encoded: string = robohub_v1_frame(
-        MESSAGE_ID_CONTROL_REQUEST, tx, control_request_marshal(control))
-
     let child: u32 = gateway_state_get_u32("area." + int_to_str(area))
     if child != 0 {
-        if !gateway_uplink_send(device_area(child), device_node(child), encoded) {
+        let routed: string = robohub_v1_frame(
+            MESSAGE_ID_CONTROL_REQUEST, tx, control_request_marshal(control))
+        if !gateway_uplink_send(device_area(child), device_node(child), routed) {
             return gateway_error(503, "the child that owns that area is not connected")
         }
         return json(202, "{\"success\":true,\"routed\":true,\"tx\":" + int_to_str(tx) + "}")
     }
 
+    // A board on this gateway's own link is sent the command sealed under its
+    // session, or not at all.
+    let encoded: string = secure_frame_down(MESSAGE_ID_CONTROL_REQUEST, tx,
+        control_request_marshal(control))
+    if encoded == "" {
+        return gateway_error(409, "the board has no authenticated session yet")
+    }
     gateway_rpc_register(tx)
     if !gateway_serial_write(encoded) {
         return gateway_error(503, "the serial link is unavailable")

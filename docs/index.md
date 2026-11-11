@@ -98,6 +98,8 @@ when there is not.
 | `OUTBOX_MAX_ROWS` | `200000` | how many unacked readings are retained before the oldest are dropped |
 | `GATEWAY_ID` | `default` | this gateway's id; a caller's token must carry `gateway:<id>:read` or `gateway:<id>:command` |
 | `RHO_AUTH_PUBLIC_KEY` | `~/.rho/auth/public.pem` | keeper's public key, which verifies every caller's token |
+| `GATEWAY_KEY_FILE` | unset | this gateway's key (64 hex digits, owner-only); each board's key is derived from it and the board's id |
+| `ALLOW_PLAIN_FRAMES` | unset | `1` accepts unauthenticated frames from boards not yet reflashed, with a warning; unset drops them |
 
 ## The telemetry outbox
 

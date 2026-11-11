@@ -389,6 +389,17 @@ generated node firmware writes a module field as `m<index>.<field>`; the live
 page lists those in its `sensors` object and the frames history. Reading it takes
 a token with `gateway:<id>:read`, and `OUTBOX_MAX_ROWS` bounds what waits for an
 aggregator.
+## Authenticated frames
+
+Every frame between a board and this gateway is authenticated (robohub-transport's
+`secure.h`). The gateway holds one key, `GATEWAY_KEY_FILE`, and derives each
+board's key from it and the board's id, so no board key is stored or sent. A board
+says hello, the gateway answers with a session bound to the board's nonce, and
+every frame after that carries a counter and a tag: a frame that is forged,
+changed, replayed or from an expired session is dropped. A plain frame is dropped
+too, unless `ALLOW_PLAIN_FRAMES=1` while boards are being reflashed. A command is
+sent to a board sealed under its session, or not at all.
+
 ## Uplink interface and access
 
 A gateway with an uplink may confine it to one interface:

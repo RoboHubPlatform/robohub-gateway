@@ -9,9 +9,30 @@ module gateway.ingest
 // that is waiting on its tx_id.
 
 fn ingest_frame(encoded: string) void {
-    let frame: TransportFrame = robohub_v1_unframe(encoded)
-    if !frame.ok {
+    let received: TransportFrame = robohub_v1_unframe(encoded)
+    if !received.ok {
         return
+    }
+
+    // A board opening a session; a frame sealed under one; or a plain frame,
+    // which is only accepted while a deployment allows it (gateway/secure.rho).
+    if received.msg_id == MESSAGE_ID_SECURE_HELLO {
+        secure_handle_hello(received.payload)
+        return
+    }
+    var frame: TransportFrame = received
+    if received.msg_id >= SECURE_FLAG {
+        frame = secure_open(received)
+        if !frame.ok {
+            return
+        }
+    } else if !secure_plain_allowed() {
+        let plain: u32 = gateway_state_get_u32("secure.plain_dropped")
+        gateway_state_set_u32("secure.plain_dropped", plain + 1)
+        return
+    } else if gateway_state_get("secure.plain_warned") == "" {
+        gateway_state_set("secure.plain_warned", "1")
+        secure_log("accepting unauthenticated frames because ALLOW_PLAIN_FRAMES=1")
     }
 
     // tx_id 0 is unsolicited, so it is telemetry and no one is waiting for it.

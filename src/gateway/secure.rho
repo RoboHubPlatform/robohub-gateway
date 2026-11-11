@@ -1,0 +1,233 @@
+module gateway.secure
+
+// Authenticated frames between this gateway and its boards.
+//
+// The protocol is robohub-transport's (include/robohub/secure.h), and this is its
+// gateway half. The gateway holds one key, read from GATEWAY_KEY_FILE (64 hex
+// digits in a file only its user can read), and derives each board's key from
+// it and the board's id, so a board's key is never stored or sent:
+//
+//   K_dev  = HMAC-SHA256(K_gw, "rh-dev1" | uid)[0:16]
+//
+// A board says hello; the gateway answers with a session bound to the board's
+// nonce, and from then on every frame either way carries a counter and a tag.
+// A frame that does not open is dropped. A plain frame is dropped too, unless
+// the deployment sets ALLOW_PLAIN_FRAMES=1 while boards are being reflashed, in
+// which case it is accepted and a warning is logged.
+
+extern fn rho_hmac_sha256_hex(key_hex: string, message_hex: string) string
+extern fn rho_random_hex(bytes: u32) string
+extern fn rho_read_text(path: string) string
+
+const SECURE_FLAG: u32 = 32768
+const MESSAGE_ID_SECURE_HELLO: u32 = 17
+const MESSAGE_ID_SECURE_SESSION: u32 = 18
+const SECURE_LIFETIME_S: u32 = 3600
+
+// The labels the protocol hashes, as hex.
+const SECURE_LABEL_DEV: string = "72682d64657631"
+const SECURE_LABEL_HELLO: string = "72682d68656c6c6f31"
+const SECURE_LABEL_SESSION: string = "72682d73657373696f6e31"
+const SECURE_LABEL_UP: string = "72682d757031"
+const SECURE_LABEL_DOWN: string = "72682d646f776e31"
+
+// secure_log writes a line the way the rest of the gateway does.
+fn secure_log(message: string) void {
+    print("robohub-gateway: " + message + "\n")
+}
+
+fn secure_hex_digit(value: u32) string {
+    return str_slice("0123456789abcdef", value, 1)
+}
+
+// secure_hex is a byte string as hex.
+fn secure_hex(data: string) string {
+    var out: string = ""
+    var i: u32 = 0
+    while i < strlen(data) {
+        let byte: u32 = u32(str_at(data, i))
+        out = out + secure_hex_digit(byte / 16) + secure_hex_digit(byte % 16)
+        i = i + 1
+    }
+    return out
+}
+
+fn secure_hex_value(digit: string) u32 {
+    let at: i32 = str_index_of("0123456789abcdef", digit)
+    if at < 0 {
+        return 0
+    }
+    return u32(at)
+}
+
+// secure_bytes is hex as a byte string.
+fn secure_bytes(hex: string) string {
+    var out: string = ""
+    var i: u32 = 0
+    while i + 1 < strlen(hex) {
+        out = out + str_from_byte(u8(secure_hex_value(str_slice(hex, i, 1)) * 16 +
+            secure_hex_value(str_slice(hex, i + 1, 1))))
+        i = i + 2
+    }
+    return out
+}
+
+// secure_tag is the first eight bytes of HMAC-SHA256, as hex.
+fn secure_tag(key_hex: string, message_hex: string) string {
+    return str_slice(rho_hmac_sha256_hex(key_hex, message_hex), 0, 16)
+}
+
+fn secure_gateway_key() string {
+    let cached: string = gateway_state_get("secure.k_gw")
+    if cached != "" {
+        return cached
+    }
+    let path: string = getenv("GATEWAY_KEY_FILE")
+    if path == "" {
+        return ""
+    }
+    var key: string = rho_read_text(path)
+    while strlen(key) > 0 && (str_slice(key, strlen(key) - 1, 1) == "\n" || str_slice(key, strlen(key) - 1, 1) == " ") {
+        key = str_slice(key, 0, strlen(key) - 1)
+    }
+    if strlen(key) != 64 {
+        return ""
+    }
+    gateway_state_set("secure.k_gw", key)
+    return key
+}
+
+// secure_plain_allowed is whether a plain frame is accepted: only when the
+// deployment says so for a migration.
+fn secure_plain_allowed() bool {
+    return getenv("ALLOW_PLAIN_FRAMES") == "1"
+}
+
+fn secure_device_key(uid_hex: string) string {
+    return str_slice(rho_hmac_sha256_hex(secure_gateway_key(), SECURE_LABEL_DEV + uid_hex), 0, 32)
+}
+
+fn secure_now_s() u32 {
+    return gateway_now_ms() / 1000
+}
+
+// secure_handle_hello answers a board's hello with a session, on the link it
+// came from, and remembers the session. A hello whose tag does not match the
+// board's key is ignored.
+fn secure_handle_hello(payload: string) void {
+    if strlen(payload) != 24 || secure_gateway_key() == "" {
+        return
+    }
+    let uid: string = secure_hex(str_slice(payload, 0, 8))
+    let nonce_b: string = secure_hex(str_slice(payload, 8, 8))
+    let tag: string = secure_hex(str_slice(payload, 16, 8))
+    let k_dev: string = secure_device_key(uid)
+    if secure_tag(k_dev, SECURE_LABEL_HELLO + uid + nonce_b) != tag {
+        secure_log("a hello did not authenticate: uid " + uid)
+        return
+    }
+    let random: string = rho_random_hex(10)
+    if strlen(random) != 20 {
+        secure_log("no random source: the hello from " + uid + " was not answered")
+        return
+    }
+    let sid: string = str_slice(random, 0, 4)
+    let nonce_g: string = str_slice(random, 4, 16)
+    let lifetime: string = secure_hex(robohub_v1_put_u16(u16(SECURE_LIFETIME_S)))
+    let session_tag: string = secure_tag(k_dev, SECURE_LABEL_SESSION + uid + nonce_b + sid + nonce_g + lifetime)
+    let k_up: string = str_slice(rho_hmac_sha256_hex(k_dev, SECURE_LABEL_UP + nonce_b + nonce_g), 0, 32)
+    let k_down: string = str_slice(rho_hmac_sha256_hex(k_dev, SECURE_LABEL_DOWN + nonce_b + nonce_g), 0, 32)
+    gateway_state_set("secure.sid." + sid, uid + "|" + k_up + "|" + k_down + "|" +
+        int_to_str(secure_now_s() + SECURE_LIFETIME_S))
+    gateway_state_set_u32("secure.up." + sid, 0)
+    gateway_state_set_u32("secure.down." + sid, 0)
+    gateway_state_set("secure.uid." + uid, sid)
+    gateway_state_set("secure.serial.sid", sid)
+    let answer: string = secure_bytes(uid + sid + nonce_g + lifetime + session_tag)
+    if !gateway_serial_write(robohub_v1_frame(MESSAGE_ID_SECURE_SESSION, 0, answer)) {
+        secure_log("the session for board " + uid + " could not be written to the link")
+    }
+    secure_log("session " + sid + " opened for board " + uid)
+}
+
+fn secure_field(record: string, index: u32) string {
+    var rest: string = record
+    var i: u32 = 0
+    while i < index {
+        let at: i32 = str_index_of(rest, "|")
+        if at < 0 {
+            return ""
+        }
+        rest = str_slice(rest, u32(at) + 1, strlen(rest) - u32(at) - 1)
+        i = i + 1
+    }
+    let end: i32 = str_index_of(rest, "|")
+    if end < 0 {
+        return rest
+    }
+    return str_slice(rest, 0, u32(end))
+}
+
+fn secure_refused() TransportFrame {
+    var frame: TransportFrame
+    frame.ok = false
+    let refused: u32 = gateway_state_get_u32("secure.refused")
+    gateway_state_set_u32("secure.refused", refused + 1)
+    return frame
+}
+
+// secure_open opens a secured frame: the session must be current, the counter
+// greater than the last accepted, and the tag the session's. The frame handed on
+// carries the message id without the flag and the payload inside.
+fn secure_open(frame: TransportFrame) TransportFrame {
+    let payload: string = frame.payload
+    if strlen(payload) < 14 {
+        return secure_refused()
+    }
+    let sid: string = secure_hex(str_slice(payload, 0, 2))
+    let record: string = gateway_state_get("secure.sid." + sid)
+    if record == "" || secure_now_s() >= u32(int_from_str(secure_field(record, 3))) {
+        return secure_refused()
+    }
+    let counter: u32 = robohub_v1_get_u32(payload, 2)
+    if counter <= gateway_state_get_u32("secure.up." + sid) {
+        return secure_refused()
+    }
+    let body_length: u32 = strlen(payload) - 14
+    let inner: string = str_slice(payload, 6, body_length)
+    let header: string = secure_hex(robohub_v1_put_u16(u16(frame.msg_id)) + robohub_v1_put_u16(u16(frame.tx_id)))
+    let expected: string = secure_tag(secure_field(record, 1),
+        header + secure_hex(str_slice(payload, 0, 6)) + secure_hex(inner))
+    if expected != secure_hex(str_slice(payload, 6 + body_length, 8)) {
+        return secure_refused()
+    }
+    gateway_state_set_u32("secure.up." + sid, counter)
+    var opened: TransportFrame
+    opened.ok = true
+    opened.msg_id = frame.msg_id - SECURE_FLAG
+    opened.tx_id = frame.tx_id
+    opened.payload = inner
+    return opened
+}
+
+// secure_frame_down is the encoded frame for a message to the board on this
+// gateway's serial link: sealed under its session when it has one, plain when
+// plain frames are allowed, and "" when neither, so nothing unauthenticated is
+// sent to a board that expects authentication.
+fn secure_frame_down(msg_id: u32, tx_id: u32, payload: string) string {
+    let sid: string = gateway_state_get("secure.serial.sid")
+    let record: string = gateway_state_get("secure.sid." + sid)
+    if sid == "" || record == "" || secure_now_s() >= u32(int_from_str(secure_field(record, 3))) {
+        if secure_plain_allowed() {
+            return robohub_v1_frame(msg_id, tx_id, payload)
+        }
+        return ""
+    }
+    let counter: u32 = gateway_state_get_u32("secure.down." + sid) + 1
+    gateway_state_set_u32("secure.down." + sid, counter)
+    let flagged: u32 = msg_id + SECURE_FLAG
+    let sid_counter: string = secure_bytes(sid) + robohub_v1_put_u32(counter)
+    let header: string = secure_hex(robohub_v1_put_u16(u16(flagged)) + robohub_v1_put_u16(u16(tx_id)))
+    let tag: string = secure_tag(secure_field(record, 2), header + secure_hex(sid_counter) + secure_hex(payload))
+    return robohub_v1_frame(flagged, tx_id, sid_counter + payload + secure_bytes(tag))
+}

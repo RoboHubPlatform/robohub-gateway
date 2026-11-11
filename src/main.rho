@@ -19,6 +19,7 @@ module gateway
 include "gateway/port.rho"
 include "gateway/security.rho"
 include "gateway/wire/protocol.rho"
+include "gateway/secure.rho"
 include "gateway/ingest.rho"
 include "gateway/stream.rho"
 include "gateway/history.rho"
