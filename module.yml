@@ -8,7 +8,9 @@
 
 module:
   name: robohub-gateway
-  id: robohub-gateway
+  id: robohub.app.gateway
+  previous_ids:
+    - robohub-gateway
   type: rho
   version: 0.4.1
   description: >
