@@ -2,6 +2,16 @@
 
 All notable changes to this module are recorded here, one section per release.
 
+## [0.5.0] - 2026-11-13
+
+Relay mode: a gateway with `GATEWAY_MODE=relay` reports through a parent. It
+dials `PARENT_UPLINK`, opens a session as a board of the parent's mesh with
+`RELAY_UID` and the key the parent derives for it (`RELAY_KEY_FILE`), announces
+its area, and carries what its boards report up under that session. A command
+the parent routes to its area is passed on to the board and answered with the
+parent's transaction id. A parent files a relay's sensor readings by the area
+and node each names, rather than under the relay. Needs rho-robohub 0.4.2.
+
 ## [0.4.0] - 2026-11-05
 
 The gateway has a durable telemetry outbox. It normalizes each accepted reading

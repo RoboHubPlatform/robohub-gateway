@@ -44,6 +44,8 @@ fn ingest_frame(encoded: string) void {
     // measurements and both name their device, so the level and the message are
     // what tell them apart and neither is told which link it arrived on.
     if frame.tx_id == 0 {
+        // A relay carries what it hears up to its parent as well.
+        relay_forward(frame.msg_id, frame.payload)
         if frame.msg_id == MESSAGE_ID_TELEMETRY {
             handle_telemetry(source, frame.payload)
             return
@@ -66,6 +68,10 @@ fn ingest_frame(encoded: string) void {
     // waiting on the tx is the one that knows what it asked for, so any response
     // is handed on and validated there.
     if frame.msg_id == MESSAGE_ID_CONTROL_RESPONSE || frame.msg_id == MESSAGE_ID_DIAG_RESPONSE {
-        gateway_rpc_signal(frame.tx_id, frame.payload)
+        // An answer to a command the parent routed through this relay goes back
+        // up; any other wakes the handler here that asked.
+        if !relay_answer(frame.msg_id, frame.tx_id, frame.payload) {
+            gateway_rpc_signal(frame.tx_id, frame.payload)
+        }
     }
 }

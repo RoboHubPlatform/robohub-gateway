@@ -48,6 +48,9 @@ and the listener are:
 | `GATEWAY_MODE` | `master` | how it is deployed: `node`, `edge`, `relay` or `master` |
 | `GATEWAY_AREA` | `1` | the area it speaks for, and numbers its devices in |
 | `UPLINK_PORT` | `0` | the port a relay dials in on; `0` listens on none |
+| `PARENT_UPLINK` | — | for `relay`: the parent's uplink, `host:port`, which this gateway dials |
+| `RELAY_UID` | — | for `relay`: its id as a board of the parent's mesh, 16 hex digits |
+| `RELAY_KEY_FILE` | — | for `relay`: the key the parent derives for that id, 32 hex digits in a file only its user reads |
 
 ## REST API
 
@@ -107,6 +110,23 @@ which is a fact rather than a failure.
 The answer is kept with the device, so `GET /api/v1/nodes` carries it as a
 `diag` object on that device's record. `probe_ok: 133` is `0x85`: console,
 timer, onewire, uart and net the board has — the probes a Pico node passes.
+
+## Relay mode
+
+A gateway with `GATEWAY_MODE=relay` and `PARENT_UPLINK` set reports through its
+parent. It is a board of the parent's mesh: it dials the parent's uplink, says
+hello with `RELAY_UID` and opens a session with the key in `RELAY_KEY_FILE` —
+`HMAC-SHA256(K_gw, "rh-dev1" | uid)[0:16]` of the parent's gateway key, which is
+what the parent derives for any board — so the parent needs nothing new to
+authenticate it. It then announces its `GATEWAY_AREA`, and redials and opens a
+new session whenever the connection drops.
+
+What the relay hears from its own boards and from the gateways below it goes up
+under that session: readings, power, state and sensor readings, each naming
+its area and node, so the parent's `GET /api/v1/nodes` lists them. A command the
+parent routes to the relay's area is opened by the relay and passed on to the
+board it names, under the relay's own session with that board; the board's
+answer goes back up with the parent's transaction id.
 
 ## The uplink
 

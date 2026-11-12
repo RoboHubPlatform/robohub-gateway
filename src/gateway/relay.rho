@@ -1,0 +1,284 @@
+module gateway.relay
+
+// Relay mode: this gateway reports through another one.
+//
+// A relay is a board of its parent's mesh. It dials the parent's uplink
+// (PARENT_UPLINK, host:port) and opens a session the way a board on Wi-Fi does
+// (gateway/secure.rho is the parent's half): its id is RELAY_UID, 16 hex
+// digits, and its key, RELAY_KEY_FILE, is the one the parent derives for that
+// id from its own gateway key, so the parent needs nothing new to authenticate
+// it. Once the session is open the relay announces the area it speaks for, which
+// is what the parent routes commands for that area down by.
+//
+// What the relay hears from its own boards it carries up, sealed under its
+// session: readings, power and state readings, sensor readings, each naming
+// its area and node. A command the parent routes down is passed on to the board
+// it names, under the relay's own session with that board, and the board's
+// answer goes back up with the parent's transaction id.
+
+extern fn gateway_parent_start(address: string) bool
+extern fn gateway_parent_connected() u32
+extern fn gateway_parent_send(frame: string) bool
+extern fn gateway_parent_next() string
+
+// The announce's mode for a gateway that reports through another.
+const RELAY_ANNOUNCE_MODE: u32 = 2
+const RELAY_HELLO_RETRY_MS: u32 = 5000
+
+fn relay_enabled() bool {
+    return gateway_mode() == "relay" && getenv("PARENT_UPLINK") != ""
+}
+
+fn relay_uid() string {
+    return getenv("RELAY_UID")
+}
+
+// relay_key is the key the parent derived for this relay's id: 32 hex digits
+// in a file only the relay's user can read.
+fn relay_key() string {
+    let cached: string = gateway_state_get("relay.key")
+    if cached != "" {
+        return cached
+    }
+    let path: string = getenv("RELAY_KEY_FILE")
+    if path == "" {
+        return ""
+    }
+    var key: string = rho_read_text(path)
+    while strlen(key) > 0 && (str_slice(key, strlen(key) - 1, 1) == "\n" || str_slice(key, strlen(key) - 1, 1) == " ") {
+        key = str_slice(key, 0, strlen(key) - 1)
+    }
+    if strlen(key) != 32 {
+        return ""
+    }
+    gateway_state_set("relay.key", key)
+    return key
+}
+
+fn relay_start() void {
+    if !relay_enabled() {
+        return
+    }
+    if strlen(relay_uid()) != 16 || relay_key() == "" {
+        secure_log("relay: RELAY_UID (16 hex digits) and RELAY_KEY_FILE (32 hex digits) are needed to report through " +
+            getenv("PARENT_UPLINK"))
+        return
+    }
+    if gateway_parent_start(getenv("PARENT_UPLINK")) {
+        secure_log("relay: reporting through " + getenv("PARENT_UPLINK") + " as " + relay_uid())
+    }
+}
+
+// relay_hello asks the parent for a session.
+fn relay_hello() void {
+    let nonce: string = rho_random_hex(8)
+    if strlen(nonce) != 16 {
+        secure_log("relay: no random source; no session was asked for")
+        return
+    }
+    let uid: string = relay_uid()
+    let tag: string = secure_tag(relay_key(), SECURE_LABEL_HELLO + uid + nonce)
+    gateway_state_set("relay.nonce", nonce)
+    gateway_state_set("relay.sid", "")
+    gateway_state_set_u32("relay.hello_at", gateway_now_ms())
+    if !gateway_parent_send(robohub_v1_frame(MESSAGE_ID_SECURE_HELLO, 0, secure_bytes(uid + nonce + tag))) {
+        secure_log("relay: the hello could not be sent")
+    }
+}
+
+// relay_accept_session checks the parent's answer and keeps the session's keys.
+fn relay_accept_session(payload: string) bool {
+    if strlen(payload) != 28 {
+        return false
+    }
+    let uid: string = secure_hex(str_slice(payload, 0, 8))
+    let sid: string = secure_hex(str_slice(payload, 8, 2))
+    let nonce_g: string = secure_hex(str_slice(payload, 10, 8))
+    let lifetime_hex: string = secure_hex(str_slice(payload, 18, 2))
+    let tag: string = secure_hex(str_slice(payload, 20, 8))
+    let nonce_b: string = gateway_state_get("relay.nonce")
+    let key: string = relay_key()
+    if uid != relay_uid() || nonce_b == "" {
+        return false
+    }
+    if secure_tag(key, SECURE_LABEL_SESSION + uid + nonce_b + sid + nonce_g + lifetime_hex) != tag {
+        secure_log("relay: the parent's session did not authenticate")
+        return false
+    }
+    let lifetime: u32 = u32(robohub_v1_get_u16(payload, 18))
+    gateway_state_set("relay.sid", sid)
+    gateway_state_set("relay.k_up", str_slice(rho_hmac_sha256_hex(key, SECURE_LABEL_UP + nonce_b + nonce_g), 0, 32))
+    gateway_state_set("relay.k_down", str_slice(rho_hmac_sha256_hex(key, SECURE_LABEL_DOWN + nonce_b + nonce_g), 0, 32))
+    gateway_state_set_u32("relay.up", 0)
+    gateway_state_set_u32("relay.down", 0)
+    gateway_state_set_u32("relay.expires", secure_now_s() + lifetime)
+    gateway_state_set("relay.nonce", "")
+    secure_log("relay: session " + sid + " opened with the parent")
+    return true
+}
+
+fn relay_session_open() bool {
+    return gateway_state_get("relay.sid") != "" && secure_now_s() < gateway_state_get_u32("relay.expires")
+}
+
+// relay_seal is a frame for the parent, sealed under the relay's session.
+fn relay_seal(msg_id: u32, tx_id: u32, payload: string) string {
+    let sid: string = gateway_state_get("relay.sid")
+    let counter: u32 = gateway_state_get_u32("relay.up") + 1
+    gateway_state_set_u32("relay.up", counter)
+    let flagged: u32 = msg_id + SECURE_FLAG
+    let sid_counter: string = secure_bytes(sid) + robohub_v1_put_u32(counter)
+    let header: string = secure_hex(robohub_v1_put_u16(u16(flagged)) + robohub_v1_put_u16(u16(tx_id)))
+    let tag: string = secure_tag(gateway_state_get("relay.k_up"), header + secure_hex(sid_counter) + secure_hex(payload))
+    return robohub_v1_frame(flagged, tx_id, sid_counter + payload + secure_bytes(tag))
+}
+
+// relay_open opens a frame the parent sealed for the relay: the session must be
+// the relay's, the counter new and the tag right.
+fn relay_open(frame: TransportFrame) TransportFrame {
+    var refused: TransportFrame
+    refused.ok = false
+    let payload: string = frame.payload
+    if strlen(payload) < 14 || !relay_session_open() {
+        return refused
+    }
+    if secure_hex(str_slice(payload, 0, 2)) != gateway_state_get("relay.sid") {
+        return refused
+    }
+    let counter: u32 = robohub_v1_get_u32(payload, 2)
+    if counter <= gateway_state_get_u32("relay.down") {
+        return refused
+    }
+    let body_length: u32 = strlen(payload) - 14
+    let inner: string = str_slice(payload, 6, body_length)
+    let header: string = secure_hex(robohub_v1_put_u16(u16(frame.msg_id)) + robohub_v1_put_u16(u16(frame.tx_id)))
+    let expected: string = secure_tag(gateway_state_get("relay.k_down"),
+        header + secure_hex(str_slice(payload, 0, 6)) + secure_hex(inner))
+    if expected != secure_hex(str_slice(payload, 6 + body_length, 8)) {
+        return refused
+    }
+    gateway_state_set_u32("relay.down", counter)
+    var opened: TransportFrame
+    opened.ok = true
+    opened.msg_id = frame.msg_id - SECURE_FLAG
+    opened.tx_id = frame.tx_id
+    opened.payload = inner
+    return opened
+}
+
+// relay_send sends a message up, and reports whether it went.
+fn relay_send(msg_id: u32, tx_id: u32, payload: string) bool {
+    if !relay_enabled() || !relay_session_open() {
+        return false
+    }
+    return gateway_parent_send(relay_seal(msg_id, tx_id, payload))
+}
+
+// relay_announce says which area this gateway speaks for, so the parent sends
+// a command for a device in it down this relay's connection.
+fn relay_announce() void {
+    let area: u32 = gateway_area()
+    let announce: Announce = Announce { GatewayId { u16(area), u16(1) }, u16(1), u16(RELAY_ANNOUNCE_MODE), u16(0), u16(area) }
+    if relay_send(MESSAGE_ID_ANNOUNCE, 0, announce_marshal(announce)) {
+        secure_log("relay: announced area " + int_to_str(area))
+    }
+}
+
+// relay_forward carries a reading this gateway heard up to the parent. Each of
+// these names its area and node, so the parent places it without asking.
+fn relay_forward(msg_id: u32, payload: string) void {
+    if msg_id == MESSAGE_ID_READING || msg_id == MESSAGE_ID_POWER_READING ||
+        msg_id == MESSAGE_ID_STATE_READING || msg_id == MESSAGE_ID_SENSOR_READING {
+        ignore_bool_relay(relay_send(msg_id, 0, payload))
+    }
+}
+
+fn ignore_bool_relay(value: bool) void {
+}
+
+// relay_answer carries a board's answer to a command the parent routed down,
+// with the parent's transaction id. It answers whether the answer was one.
+fn relay_answer(msg_id: u32, tx_id: u32, payload: string) bool {
+    if tx_id == 0 || gateway_state_get_u32("relay.tx." + int_to_str(tx_id)) == 0 {
+        return false
+    }
+    gateway_state_set_u32("relay.tx." + int_to_str(tx_id), 0)
+    ignore_bool_relay(relay_send(msg_id, tx_id, payload))
+    return true
+}
+
+// relay_down passes a command from the parent on to the board it names: down
+// the child that owns its area, or on this gateway's own link.
+fn relay_down(frame: TransportFrame) void {
+    var area: u32 = 0
+    if frame.msg_id == MESSAGE_ID_CONTROL_REQUEST && control_request_valid(frame.payload) {
+        area = u32(control_request_unmarshal(frame.payload).device.area_id)
+    } else if frame.msg_id == MESSAGE_ID_DIAG_REQUEST && diag_request_valid(frame.payload) {
+        area = u32(diag_request_unmarshal(frame.payload).device.area_id)
+    } else {
+        return
+    }
+    gateway_state_set_u32("relay.tx." + int_to_str(frame.tx_id), 1)
+    let child: u32 = gateway_state_get_u32("area." + int_to_str(area))
+    if child != 0 {
+        let routed: string = secure_seal(gateway_state_get("secure.child." + int_to_str(child) + ".sid"),
+            frame.msg_id, frame.tx_id, frame.payload)
+        if routed == "" || !gateway_uplink_send(device_area(child), device_node(child), routed) {
+            secure_log("relay: a command for area " + int_to_str(area) + " could not be passed on")
+        }
+        return
+    }
+    let encoded: string = secure_frame_down(frame.msg_id, frame.tx_id, frame.payload)
+    if encoded == "" || !gateway_serial_write(encoded) {
+        secure_log("relay: a command for area " + int_to_str(area) + " could not be passed on")
+    }
+}
+
+fn relay_apply(encoded: string) void {
+    let received: TransportFrame = robohub_v1_unframe(encoded)
+    if !received.ok {
+        return
+    }
+    if received.msg_id == MESSAGE_ID_SECURE_SESSION {
+        if relay_accept_session(received.payload) {
+            relay_announce()
+        }
+        return
+    }
+    if received.msg_id >= SECURE_FLAG {
+        let opened: TransportFrame = relay_open(received)
+        if opened.ok {
+            relay_down(opened)
+        }
+    }
+}
+
+// relay_tick keeps the relay's session with its parent and drains what the
+// parent sent. The background loop calls it beside the uplink.
+fn relay_tick() void {
+    if !relay_enabled() || relay_key() == "" {
+        return
+    }
+    let generation: u32 = gateway_parent_connected()
+    if generation == 0 {
+        return
+    }
+    if generation != gateway_state_get_u32("relay.generation") {
+        gateway_state_set_u32("relay.generation", generation)
+        relay_hello()
+        return
+    }
+    let now: u32 = gateway_now_ms()
+    if !relay_session_open() && now - gateway_state_get_u32("relay.hello_at") > RELAY_HELLO_RETRY_MS {
+        relay_hello()
+    }
+    var guard: u32 = 0
+    while guard < 64 {
+        let frame: string = gateway_parent_next()
+        if strlen(frame) == 0 {
+            break
+        }
+        relay_apply(frame)
+        guard = guard + 1
+    }
+}

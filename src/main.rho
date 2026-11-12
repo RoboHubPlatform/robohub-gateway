@@ -26,6 +26,7 @@ include "gateway/history.rho"
 include "gateway/devices.rho"
 include "gateway/outbox.rho"
 include "gateway/state.rho"
+include "gateway/relay.rho"
 
 import std.web.http
 
@@ -87,6 +88,9 @@ fn init() void {
             print("robohub-gateway: uplink listening on port " + int_to_str(uplink) + "\n")
         }
     }
+    // A relay reports through its parent: it dials the parent's uplink and
+    // opens a session as a board of the parent's mesh (gateway/relay.rho).
+    relay_start()
     if outbox_start() {
         print("robohub-gateway: outbox " + gateway_outbox_status() + "\n")
     } else {
@@ -104,6 +108,7 @@ fn background() void {
         print("robohub-gateway: no serial link, ingest disabled\n")
         while true {
             drain_uplink()
+            relay_tick()
             rho_sleep_ms(20)
         }
     }
@@ -114,5 +119,6 @@ fn background() void {
             ingest_frame(frame)
         }
         drain_uplink()
+        relay_tick()
     }
 }
