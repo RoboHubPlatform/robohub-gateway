@@ -406,6 +406,15 @@ changed, replayed or from an expired session is dropped. A plain frame is droppe
 too, unless `ALLOW_PLAIN_FRAMES=1` while boards are being reflashed. A command is
 sent to a board sealed under its session, or not at all.
 
+The uplink is authenticated the same way. Whoever dials in — a board on Wi-Fi, or
+a relay below this gateway — says hello on its connection and is answered on it,
+and every frame after that is sealed under its session; a command routed down to
+a relay is sealed under the session its connection opened. A plain frame on the
+uplink is dropped like one on the serial link. A sensor reading that comes up the
+uplink is the connected board's own and is kept under its id; what a relay
+carries up is placed by area and node. The uplink is drained by the gateway's own
+loop, so a session is answered while the other end waits for it.
+
 ## Uplink interface and access
 
 A gateway with an uplink may confine it to one interface:

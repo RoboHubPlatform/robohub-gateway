@@ -24,9 +24,12 @@ extern fn gateway_area() u32
 extern fn gateway_uplink_port() u32
 extern fn gateway_uplink_start(port: u32) bool
 extern fn gateway_uplink_next() string
+extern fn gateway_uplink_take() string
+extern fn rho_sleep_ms(milliseconds: u32) void
 extern fn gateway_uplink_connection() u32
 extern fn gateway_uplink_bind(child_area: u32, child_link: u32, connection: u32) void
 extern fn gateway_uplink_send(child_area: u32, child_link: u32, frame: string) bool
+extern fn gateway_uplink_reply(connection: u32, frame: string) bool
 
 // serial_start asks for the link named by SERIAL_PORT, at SERIAL_BAUD.
 extern fn gateway_serial_start() bool

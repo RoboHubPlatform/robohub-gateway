@@ -111,12 +111,13 @@ fn secure_now_s() u32 {
     return gateway_now_ms() / 1000
 }
 
-// secure_handle_hello answers a board's hello with a session, on the link it
-// came from, and remembers the session. A hello whose tag does not match the
-// board's key is ignored.
-fn secure_handle_hello(payload: string) void {
+// secure_accept_hello opens a session for a board's hello and returns
+// `<sid>|<encoded session frame>`, the answer to send back on the link the hello
+// came from, or "" when the hello is not answered. A hello whose tag does not
+// match the board's key is not.
+fn secure_accept_hello(payload: string) string {
     if strlen(payload) != 24 || secure_gateway_key() == "" {
-        return
+        return ""
     }
     let uid: string = secure_hex(str_slice(payload, 0, 8))
     let nonce_b: string = secure_hex(str_slice(payload, 8, 8))
@@ -124,12 +125,12 @@ fn secure_handle_hello(payload: string) void {
     let k_dev: string = secure_device_key(uid)
     if secure_tag(k_dev, SECURE_LABEL_HELLO + uid + nonce_b) != tag {
         secure_log("a hello did not authenticate: uid " + uid)
-        return
+        return ""
     }
     let random: string = rho_random_hex(10)
     if strlen(random) != 20 {
         secure_log("no random source: the hello from " + uid + " was not answered")
-        return
+        return ""
     }
     let sid: string = str_slice(random, 0, 4)
     let nonce_g: string = str_slice(random, 4, 16)
@@ -142,12 +143,38 @@ fn secure_handle_hello(payload: string) void {
     gateway_state_set_u32("secure.up." + sid, 0)
     gateway_state_set_u32("secure.down." + sid, 0)
     gateway_state_set("secure.uid." + uid, sid)
-    gateway_state_set("secure.serial.sid", sid)
-    let answer: string = secure_bytes(uid + sid + nonce_g + lifetime + session_tag)
-    if !gateway_serial_write(robohub_v1_frame(MESSAGE_ID_SECURE_SESSION, 0, answer)) {
-        secure_log("the session for board " + uid + " could not be written to the link")
-    }
     secure_log("session " + sid + " opened for board " + uid)
+    let answer: string = secure_bytes(uid + sid + nonce_g + lifetime + session_tag)
+    return sid + "|" + robohub_v1_frame(MESSAGE_ID_SECURE_SESSION, 0, answer)
+}
+
+// secure_handle_hello answers a hello heard on this gateway's serial link, on
+// that link, and makes the session the one frames down that link are sealed under.
+fn secure_handle_hello(payload: string) void {
+    let accepted: string = secure_accept_hello(payload)
+    if accepted == "" {
+        return
+    }
+    let sid: string = secure_field(accepted, 0)
+    gateway_state_set("secure.serial.sid", sid)
+    if !gateway_serial_write(str_slice(accepted, strlen(sid) + 1, strlen(accepted) - strlen(sid) - 1)) {
+        secure_log("session " + sid + " could not be written to the link")
+    }
+}
+
+// secure_handle_uplink_hello answers a hello that came up an uplink connection —
+// a board on Wi-Fi, or a relay below this gateway — on that connection, and
+// remembers which session the connection holds.
+fn secure_handle_uplink_hello(payload: string, connection: u32) void {
+    let accepted: string = secure_accept_hello(payload)
+    if accepted == "" {
+        return
+    }
+    let sid: string = secure_field(accepted, 0)
+    gateway_state_set("secure.conn." + int_to_str(connection) + ".sid", sid)
+    if !gateway_uplink_reply(connection, str_slice(accepted, strlen(sid) + 1, strlen(accepted) - strlen(sid) - 1)) {
+        secure_log("session " + sid + " could not be written to its connection")
+    }
 }
 
 fn secure_field(record: string, index: u32) string {
@@ -229,7 +256,12 @@ fn secure_frame_source(frame: TransportFrame) string {
 // plain frames are allowed, and "" when neither, so nothing unauthenticated is
 // sent to a board that expects authentication.
 fn secure_frame_down(msg_id: u32, tx_id: u32, payload: string) string {
-    let sid: string = gateway_state_get("secure.serial.sid")
+    return secure_seal(gateway_state_get("secure.serial.sid"), msg_id, tx_id, payload)
+}
+
+// secure_seal is the encoded frame for a message sealed under one session, plain
+// when there is none and plain frames are allowed, and "" otherwise.
+fn secure_seal(sid: string, msg_id: u32, tx_id: u32, payload: string) string {
     let record: string = gateway_state_get("secure.sid." + sid)
     if sid == "" || record == "" || secure_now_s() >= u32(int_from_str(secure_field(record, 3))) {
         if secure_plain_allowed() {

@@ -34,11 +34,14 @@ fn drain_uplink() u32 {
     var applied: u32 = 0
     var guard: u32 = 0
     while guard < 4096 {
-        let frame: string = gateway_uplink_next()
-        if strlen(frame) == 0 {
+        // The frame and the connection it came on, in one answer.
+        let taken: string = gateway_uplink_take()
+        let colon: i32 = str_index_of(taken, ":")
+        if colon < 0 {
             break
         }
-        apply_uplink_frame(frame)
+        let connection: u32 = u32(int_from_str(str_slice(taken, 0, u32(colon))))
+        apply_uplink_frame(str_slice(taken, u32(colon) + 1, strlen(taken) - u32(colon) - 1), connection)
         applied = applied + 1
         guard = guard + 1
     }
@@ -49,9 +52,37 @@ fn drain_uplink() u32 {
 // this gateway does not hear directly — a board behind a relay — and becomes the
 // same device record a local reading would. An announce says which gateway is
 // below and the area it speaks for, which is what a command is routed down by.
-fn apply_uplink_frame(encoded: string) void {
-    let frame: TransportFrame = robohub_v1_unframe(encoded)
-    if !frame.ok {
+fn apply_uplink_frame(encoded: string, connection: u32) void {
+    let received: TransportFrame = robohub_v1_unframe(encoded)
+    if !received.ok {
+        return
+    }
+    // The uplink is authenticated as the serial link is: whoever dials in — a
+    // board on Wi-Fi or a relay — opens a session first, and every frame after
+    // that is sealed under it. A plain frame is dropped unless the deployment
+    // allows plain frames while it is being reflashed.
+    if received.msg_id == MESSAGE_ID_SECURE_HELLO {
+        secure_handle_uplink_hello(received.payload, connection)
+        return
+    }
+    var frame: TransportFrame = received
+    var source: string = ""
+    if received.msg_id >= SECURE_FLAG {
+        frame = secure_open(received)
+        if !frame.ok {
+            return
+        }
+        source = secure_frame_source(received)
+    } else if !secure_plain_allowed() {
+        gateway_state_set_u32("secure.plain_dropped", gateway_state_get_u32("secure.plain_dropped") + 1)
+        return
+    }
+
+    // A sensor reading is never relayed, so on an uplink it is the session
+    // owner's own: a board that reports over the network. It is kept under that
+    // board; what a relay carries up is placed by its area and node.
+    if frame.msg_id == MESSAGE_ID_SENSOR_READING {
+        handle_sensor_reading(source, frame.payload)
         return
     }
 
@@ -94,7 +125,11 @@ fn apply_uplink_frame(encoded: string) void {
         // Bind the child to the link it announced itself on, so a command for
         // its area can be sent back down the way the announcement came up.
         gateway_uplink_bind(u32(announce.gateway.area_id), u32(announce.gateway.link_id),
-            gateway_uplink_connection())
+            connection)
+        // A command for the child is sealed under the session its connection
+        // opened.
+        gateway_state_set("secure.child." + int_to_str(child) + ".sid",
+            gateway_state_get("secure.conn." + int_to_str(connection) + ".sid"))
         gateway_state_set_u32("child." + int_to_str(child), u32(announce.area_id))
         // The area it speaks for, so a device in that area is known to be behind
         // it rather than on this gateway's own link.
@@ -493,8 +528,11 @@ fn route_control(area: u32, node: u32, opcode: u16, argument: u32) Response {
     let control: ControlRequest = ControlRequest { device, opcode, argument }
     let child: u32 = gateway_state_get_u32("area." + int_to_str(area))
     if child != 0 {
-        let routed: string = robohub_v1_frame(
+        let routed: string = secure_seal(gateway_state_get("secure.child." + int_to_str(child) + ".sid"),
             MESSAGE_ID_CONTROL_REQUEST, tx, control_request_marshal(control))
+        if routed == "" {
+            return gateway_error(409, "the child that owns that area has no authenticated session yet")
+        }
         if !gateway_uplink_send(device_area(child), device_node(child), routed) {
             return gateway_error(503, "the child that owns that area is not connected")
         }

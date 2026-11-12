@@ -98,15 +98,21 @@ fn init() void {
 // link: read a frame, route it, repeat. If the link cannot be opened the
 // service still answers - it just has nothing to report.
 fn background() void {
+    // The uplink is drained here as well as on a request, so whoever dials in —
+    // a relay, a board on Wi-Fi — is answered while it waits for its session.
     if !gateway_serial_start() {
         print("robohub-gateway: no serial link, ingest disabled\n")
-        return
+        while true {
+            drain_uplink()
+            rho_sleep_ms(20)
+        }
     }
     gateway_udp_start()
     while true {
-        let frame: string = gateway_serial_read(100)
+        let frame: string = gateway_serial_read(20)
         if strlen(frame) > 0 {
             ingest_frame(frame)
         }
+        drain_uplink()
     }
 }
