@@ -210,6 +210,20 @@ fn secure_open(frame: TransportFrame) TransportFrame {
     return opened
 }
 
+// secure_frame_source is the board a sealed frame came from: the id its session
+// was opened with, as 16 hex digits, or "" when the session is unknown. It is
+// asked after secure_open accepted the frame, so the session is current.
+fn secure_frame_source(frame: TransportFrame) string {
+    if strlen(frame.payload) < 2 {
+        return ""
+    }
+    let record: string = gateway_state_get("secure.sid." + secure_hex(str_slice(frame.payload, 0, 2)))
+    if record == "" {
+        return ""
+    }
+    return secure_field(record, 0)
+}
+
 // secure_frame_down is the encoded frame for a message to the board on this
 // gateway's serial link: sealed under its session when it has one, plain when
 // plain frames are allowed, and "" when neither, so nothing unauthenticated is

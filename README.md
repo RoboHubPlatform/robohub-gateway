@@ -384,9 +384,15 @@ aggregator reads the outbox, which holds normalized readings rather than frames:
   `last_seq`, `dropped`.
 
 A reading is one signal of one device:
-`{"seq","area_id","node_id","field","value","status","received_ms"}`. The
-generated node firmware writes a module field as `m<index>.<field>`; the live
-page lists those in its `sensors` object and the frames history. Reading it takes
+`{"seq","source","area_id","node_id","field","value","status","received_ms"}`.
+`source` is the board that sent it, by the id its session was opened with, and is
+what a store keeps the series under, so a board keeps its history whatever area
+and node it is given; a reading that arrived unauthenticated, or from a gateway
+below, has none. The generated node firmware writes a module field as
+`<tag>.<field>`, the tag being the start of the module's own id (firmware built
+before that wrote `m<index>.<field>`); the live page lists those in its
+`sensors` object and the frames history.
+ Reading it takes
 a token with `gateway:<id>:read`, and `OUTBOX_MAX_ROWS` bounds what waits for an
 aggregator.
 ## Authenticated frames

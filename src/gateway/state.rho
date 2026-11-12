@@ -56,19 +56,19 @@ fn apply_uplink_frame(encoded: string) void {
     }
 
     if frame.msg_id == MESSAGE_ID_READING {
-        handle_reading(frame.payload)
+        handle_reading("", frame.payload)
         return
     }
 
     // A power reading carried up is the same message a power device sends
     // directly, so a relay re-frames it and the master records it identically.
     if frame.msg_id == MESSAGE_ID_POWER_READING {
-        handle_power_reading(frame.payload)
+        handle_power_reading("", frame.payload)
         return
     }
 
     if frame.msg_id == MESSAGE_ID_STATE_READING {
-        handle_state_reading(frame.payload)
+        handle_state_reading("", frame.payload)
         return
     }
 

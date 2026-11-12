@@ -37,6 +37,17 @@ fn outbox_emit_u32(area: u32, node: u32, field_name: string, value: u32, status:
     return gateway_outbox_append_u32(area, node, field_name, value, status, gateway_wall_time_ms())
 }
 
+// outbox_emit_from records a reading with the board that sent it, by the id its
+// session was opened with, so the store keeps it under that board whatever area
+// and node it reports.
+fn outbox_emit_from(source: string, area: u32, node: u32, field_name: string, value: f32, status: u32) u32 {
+    return gateway_outbox_append_from(source, area, node, field_name, value, status, gateway_wall_time_ms())
+}
+
+fn outbox_emit_from_u32(source: string, area: u32, node: u32, field_name: string, value: u32, status: u32) u32 {
+    return gateway_outbox_append_from_u32(source, area, node, field_name, value, status, gateway_wall_time_ms())
+}
+
 // outbox_fetch serves everything after the caller's sequence, up to a limit.
 fn outbox_fetch(req: Request) Response {
     if !outbox_authorized(req) {

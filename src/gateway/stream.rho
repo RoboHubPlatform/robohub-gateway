@@ -35,12 +35,12 @@ fn status_text(status: u32) string {
     return "OK"
 }
 
-fn handle_telemetry(payload: string) void {
+fn handle_telemetry(source: string, payload: string) void {
     if !telemetry_valid(payload) {
         return
     }
     let message: Telemetry = telemetry_unmarshal(payload)
-    record_reading(u32(message.device.area_id), u32(message.device.node_id),
+    record_reading(source, u32(message.device.area_id), u32(message.device.node_id),
         message.timestamp_ms, message.temperature_c, message.status)
 }
 
@@ -48,18 +48,18 @@ fn handle_telemetry(payload: string) void {
 // carried up for a device it heard. The level differs and the fields do not, so
 // both become one entry in the device's state — which is what makes a device the
 // same device whether it is wired to this gateway or to one below it.
-fn handle_reading(payload: string) void {
+fn handle_reading(source: string, payload: string) void {
     if !reading_valid(payload) {
         return
     }
     let message: Reading = reading_unmarshal(payload)
-    record_reading(u32(message.device.area_id), u32(message.device.node_id),
+    record_reading(source, u32(message.device.area_id), u32(message.device.node_id),
         message.timestamp_ms, message.temperature_c, u32(message.status))
 }
 
 // record_reading is what a reading from either level becomes: the device's
 // newest values, and one line for the collector.
-fn record_reading(area: u32, node: u32, timestamp: u32, temperature: f32, status: u32) void {
+fn record_reading(source: string, area: u32, node: u32, timestamp: u32, temperature: f32, status: u32) void {
     let key: u32 = device_key(area, node)
 
     gateway_node_seen(key)
@@ -80,7 +80,7 @@ fn record_reading(area: u32, node: u32, timestamp: u32, temperature: f32, status
     stream_publish(key, timestamp, temperature, status)
     // The outbox is the durable feed: one record per signal, so an aggregator
     // can store a series without decoding the frame.
-    outbox_emit(area, node, "temperature_c", temperature, status)
+    outbox_emit_from(source, area, node, "temperature_c", temperature, status)
 }
 
 // stream_publish renders one PlotJuggler record and sends it. The device — its
@@ -98,18 +98,18 @@ fn stream_publish(key: u32, timestamp: u32, temperature: f32, status: u32) bool 
 // handle_power_reading is a power device's reading, at either level: one message
 // id and one set of fields, so a Growatt's Modbus figures and a Hoymiles's HTTP
 // figures become the same device record.
-fn handle_power_reading(payload: string) void {
+fn handle_power_reading(source: string, payload: string) void {
     if !power_reading_valid(payload) {
         return
     }
     let message: PowerReading = power_reading_unmarshal(payload)
-    record_power(message)
+    record_power(source, message)
 }
 
 // record_power stores one power device's figures under its key and streams them.
 // `has_power` marks the record as a power device, so the listing knows to render
 // power fields rather than a temperature.
-fn record_power(message: PowerReading) void {
+fn record_power(source: string, message: PowerReading) void {
     let key: u32 = device_key(u32(message.device.area_id), u32(message.device.node_id))
 
     gateway_node_seen(key)
@@ -142,25 +142,25 @@ fn record_power(message: PowerReading) void {
     let node: u32 = device_node(key)
     let status: u32 = u32(message.status)
     if (u32(message.valid) & POWER_FIELD_PV_POWER) != 0 {
-        outbox_emit(area, node, "pv_power_w", message.pv_power_w, status)
+        outbox_emit_from(source, area, node, "pv_power_w", message.pv_power_w, status)
     }
     if (u32(message.valid) & POWER_FIELD_LOAD_POWER) != 0 {
-        outbox_emit(area, node, "load_power_w", message.load_power_w, status)
+        outbox_emit_from(source, area, node, "load_power_w", message.load_power_w, status)
     }
     if (u32(message.valid) & POWER_FIELD_GRID_POWER) != 0 {
-        outbox_emit(area, node, "grid_power_w", message.grid_power_w, status)
+        outbox_emit_from(source, area, node, "grid_power_w", message.grid_power_w, status)
     }
     if (u32(message.valid) & POWER_FIELD_BATTERY_POWER) != 0 {
-        outbox_emit(area, node, "battery_power_w", message.battery_power_w, status)
+        outbox_emit_from(source, area, node, "battery_power_w", message.battery_power_w, status)
     }
     if (u32(message.valid) & POWER_FIELD_BATTERY_SOC) != 0 {
-        outbox_emit(area, node, "battery_soc", message.battery_soc, status)
+        outbox_emit_from(source, area, node, "battery_soc", message.battery_soc, status)
     }
     if (u32(message.valid) & POWER_FIELD_ENERGY_TODAY) != 0 {
-        outbox_emit(area, node, "energy_today_kwh", message.energy_today_kwh, status)
+        outbox_emit_from(source, area, node, "energy_today_kwh", message.energy_today_kwh, status)
     }
     if (u32(message.valid) & POWER_FIELD_ENERGY_TOTAL) != 0 {
-        outbox_emit(area, node, "energy_total_kwh", message.energy_total_kwh, status)
+        outbox_emit_from(source, area, node, "energy_total_kwh", message.energy_total_kwh, status)
     }
 }
 
@@ -187,16 +187,16 @@ fn stream_publish_power(key: u32, message: PowerReading) bool {
 // setpoint — at either level. It becomes the device's newest state, apart from
 // its measurements because it is a different statement: what the device is,
 // rather than what it reads.
-fn handle_state_reading(payload: string) void {
+fn handle_state_reading(source: string, payload: string) void {
     if !state_reading_valid(payload) {
         return
     }
     let message: StateReading = state_reading_unmarshal(payload)
-    record_state(message)
+    record_state(source, message)
 }
 
 // record_state stores a device's state under its key and streams it.
-fn record_state(message: StateReading) void {
+fn record_state(source: string, message: StateReading) void {
     let key: u32 = device_key(u32(message.device.area_id), u32(message.device.node_id))
 
     gateway_node_seen(key)
@@ -219,10 +219,10 @@ fn record_state(message: StateReading) void {
     let node: u32 = device_node(key)
     let status: u32 = u32(message.status)
     if (u32(message.valid) & STATE_FIELD_SWITCH_STATE) != 0 {
-        outbox_emit_u32(area, node, "state", u32(message.switch_state), status)
+        outbox_emit_from_u32(source, area, node, "state", u32(message.switch_state), status)
     }
     if (u32(message.valid) & STATE_FIELD_SETPOINT) != 0 {
-        outbox_emit(area, node, "setpoint", message.setpoint, status)
+        outbox_emit_from(source, area, node, "setpoint", message.setpoint, status)
     }
 }
 
@@ -254,18 +254,18 @@ fn c_string(value: string) string {
     return out
 }
 
-fn handle_sensor_reading(payload: string) void {
+fn handle_sensor_reading(source: string, payload: string) void {
     if !sensor_reading_valid(payload) {
         return
     }
     let message: SensorReading = sensor_reading_unmarshal(payload)
-    record_sensor(message)
+    record_sensor(source, message)
 }
 
 // record_sensor stores one named measurement under the field the device
 // declared. It is the generic path: a new sensor is a manifest and a publish
 // call, not a new message and a new branch here.
-fn record_sensor(message: SensorReading) void {
+fn record_sensor(source: string, message: SensorReading) void {
     let field_name: string = c_string(message.field)
     if field_name == "" {
         return
@@ -280,6 +280,6 @@ fn record_sensor(message: SensorReading) void {
     gateway_state_set_u32("frames", gateway_state_get_u32("frames") + 1)
     history_record("reading", key, message.timestamp_ms, message.value,
         u32(message.status), "field " + field_name)
-    outbox_emit(u32(message.device.area_id), u32(message.device.node_id),
+    outbox_emit_from(source, u32(message.device.area_id), u32(message.device.node_id),
         field_name, message.value, u32(message.status))
 }

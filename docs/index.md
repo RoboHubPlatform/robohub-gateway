@@ -113,7 +113,10 @@ what lets the gateway prune:
 
 - `GET /api/v1/telemetry/outbox?after=<seq>&limit=<n>` — the readings after
   `after`, at most `limit` (default 500). A record is
-  `{"seq","area_id","node_id","field","value","status","received_ms"}`.
+  `{"seq","source","area_id","node_id","field","value","status","received_ms"}`,
+  where `source` is the board that sent it, by the id its session was opened
+  with. A reading that arrived unauthenticated, or from a gateway below, has
+  none, and the store places it by area and node.
 - `POST /api/v1/telemetry/ack` — `{"seq": n}`; removes what the aggregator has
   committed and records the floor so a restart does not replay it.
 - `GET /api/v1/telemetry/outbox/status` — `path`, `depth`, `base_seq`,
