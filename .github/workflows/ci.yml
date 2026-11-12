@@ -1,0 +1,18 @@
+# CI for this repository: the RoboHub workflow every repository in the
+# ecosystem calls, so the steps are written once (robohub/.github/workflows).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: RoboHubPlatform/robohub/.github/workflows/robohub-ci.yml@main
+    secrets: inherit
+    with:
+      components: rho-robohub
+      build: .
