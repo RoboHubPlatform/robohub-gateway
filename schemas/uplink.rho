@@ -2,8 +2,12 @@
 // @file uplink.rho
 // @brief L1: the protocol between gateways.
 //
-// @module uplink
-// @project robohub-gateway
+// The one source of the RoboHub wire protocol is robohub/protocol/schemas. Every
+// other copy is written from it by robohub/protocol/tools/sync.py: edit it here,
+// then run the tool, which also regenerates each consumer's code.
+//
+// @module robohub-protocol
+// @project robohub-protocol
 // @author Aurel Miron
 // @date 2026-10-13
 //

@@ -2,6 +2,10 @@
 
 All notable changes to this module are recorded here, one section per release.
 
+## [0.5.4] - 2026-11-14
+
+The protocol schemas are a copy of robohub-protocol 1.0.0 (robohub/protocol), written by its tools/sync.py; the generated Rho is unchanged.
+
 ## [0.5.3] - 2026-11-13
 
 A board that asks for a session from a gateway with no usable key is said once

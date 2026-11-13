@@ -1,6 +1,10 @@
 #!/bin/sh
 # Regenerate the Rho payloads and transport from the schemas.
 #
+# The schemas here are a copy: the source is robohub/protocol/schemas, and its
+# tools/sync.py writes this copy and regenerates this code with the commands
+# below. Edit a schema there, not here.
+#
 # The schemas are split by who speaks them:
 #
 #   schemas/common.rho    the identity and families both levels share
