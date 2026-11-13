@@ -244,7 +244,17 @@ fn secure_restore() u32 {
 // came from, or "" when the hello is not answered. A hello whose tag does not
 // match the board's key is not.
 fn secure_accept_hello(payload: string) string {
-    if strlen(payload) != 24 || secure_gateway_key() == "" {
+    if strlen(payload) != 24 {
+        return ""
+    }
+    // A board asking for a session from a gateway with no key is not answered;
+    // that is said once, since it is why a sealed board goes unheard.
+    if secure_gateway_key() == "" {
+        if gateway_state_get("secure.nokey_warned") == "" {
+            gateway_state_set("secure.nokey_warned", "1")
+            secure_log("a board asked for a session, but GATEWAY_KEY_FILE (" + getenv("GATEWAY_KEY_FILE") +
+                ") holds no key of 64 hex digits; sealed boards are not heard")
+        }
         return ""
     }
     let uid: string = secure_hex(str_slice(payload, 0, 8))

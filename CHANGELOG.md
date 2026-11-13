@@ -2,6 +2,12 @@
 
 All notable changes to this module are recorded here, one section per release.
 
+## [0.5.3] - 2026-11-13
+
+A board that asks for a session from a gateway with no usable key is said once
+in the log, naming the key file: it is why a sealed board goes unheard, and it
+was silent.
+
 ## [0.5.2] - 2026-11-13
 
 The serial link is opened when it appears and again when it comes back: a port
