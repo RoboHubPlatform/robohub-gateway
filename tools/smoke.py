@@ -708,6 +708,38 @@ def main():
     except subprocess.TimeoutExpired:
         proc.kill()
 
+    # A serial link that is not there at start is opened when it appears, and
+    # one that goes away (a board on USB resetting) is opened again when it is
+    # back, as another device behind the same name.
+    late = os.path.join(work, "late-tty")
+    late_env = dict(env, SERIAL_PORT=late)
+    proc = subprocess.Popen([BIN], env=late_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    wait_ready(proc)
+    first_master, first_slave = pty.openpty()
+    os.symlink(os.ttyname(first_slave), late)
+    time.sleep(2.6)
+    os.write(first_master, telemetry_frame(AREA, 21, 18.5, 0, 1000))
+    time.sleep(0.3)
+    if node_temperature(AREA, 21) != 18.5:
+        failures.append("a serial link that appeared after the start was not opened")
+    os.close(first_master)
+    os.close(first_slave)
+    second_master, second_slave = pty.openpty()
+    os.remove(late)
+    os.symlink(os.ttyname(second_slave), late)
+    time.sleep(2.6)
+    os.write(second_master, telemetry_frame(AREA, 22, 17.0, 0, 2000))
+    deadline = time.time() + 3
+    while time.time() < deadline and node_temperature(AREA, 22) != 17.0:
+        time.sleep(0.2)
+    if node_temperature(AREA, 22) != 17.0:
+        failures.append("a serial link that went away and came back was not opened again")
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
     if failures:
         print("\nFAILURES:")
         for f in failures:

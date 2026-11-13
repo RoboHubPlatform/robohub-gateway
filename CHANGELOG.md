@@ -2,6 +2,14 @@
 
 All notable changes to this module are recorded here, one section per release.
 
+## [0.5.2] - 2026-11-13
+
+The serial link is opened when it appears and again when it comes back: a port
+that was not there at start no longer disables ingest for good, and a board on
+USB that resets (and re-enumerates) is heard again within two seconds. Built on
+rho-robohub 0.5.1. The smoke test starts the gateway before its port exists,
+then takes the port away and brings it back.
+
 ## [0.5.1] - 2026-11-13
 
 A restart no longer blinds the boards.

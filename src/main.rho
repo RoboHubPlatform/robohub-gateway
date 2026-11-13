@@ -103,24 +103,26 @@ fn init() void {
 }
 
 // background runs on its own goroutine beside the HTTP listener. It owns the
-// link: read a frame, route it, repeat. If the link cannot be opened the
-// service still answers - it just has nothing to report.
+// link: read a frame, route it, repeat. A link that cannot be opened is tried
+// again, and the service answers all the while.
 fn background() void {
     // The uplink is drained here as well as on a request, so whoever dials in —
     // a relay, a board on Wi-Fi — is answered while it waits for its session.
+    // A link that is not there yet, or goes away — a board on USB that resets —
+    // is opened again when it is back, every two seconds at most; the uplink is
+    // served all the while.
     if !gateway_serial_start() {
-        print("robohub-gateway: no serial link, ingest disabled\n")
-        while true {
-            drain_uplink()
-            relay_tick()
-            rho_sleep_ms(20)
-        }
+        print("robohub-gateway: no serial link yet; it is opened when it appears\n")
     }
     gateway_udp_start()
     while true {
-        let frame: string = gateway_serial_read(20)
-        if strlen(frame) > 0 {
-            ingest_frame(frame)
+        if gateway_serial_start() {
+            let frame: string = gateway_serial_read(20)
+            if strlen(frame) > 0 {
+                ingest_frame(frame)
+            }
+        } else {
+            rho_sleep_ms(20)
         }
         drain_uplink()
         relay_tick()

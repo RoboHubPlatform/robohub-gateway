@@ -12,7 +12,7 @@ module:
   previous_ids:
     - robohub-gateway
   type: rho
-  version: 0.5.1
+  version: 0.5.2
   license: "MIT"
   description: >
     Edge gateway for RoboHub firmware nodes: ingests COBS frames over serial,
