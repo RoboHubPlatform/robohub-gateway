@@ -2,6 +2,15 @@
 
 All notable changes to this module are recorded here, one section per release.
 
+## [0.5.1] - 2026-11-13
+
+A restart no longer blinds the boards.
+
+- The live sessions are kept in a file only the gateway's user can read (`sessions` beside the gateway's key, or `GATEWAY_SESSION_FILE`) and taken back at start, so a board that holds a session is heard at once instead of after it expires, up to an hour later. Each session's counters are kept every 64 frames, and a restored session starts 64 past what was kept: a frame recorded before the restart cannot be replayed after it.
+- A session's expiry is reckoned on the wall clock, not on the uptime counter, which wrapped after 49.7 days and stopped sessions expiring.
+- A new session never takes the id of one still in use (the id is 16 bits); expired sessions are forgotten.
+- The smoke test runs again: it carries a ticket and a gateway key, and drives the sealed path — a hello, a session, sealed frames, a restart, a refused stale counter and a refused replay. The relay test carries a ticket too.
+
 ## [0.5.0] - 2026-11-13
 
 Relay mode: a gateway with `GATEWAY_MODE=relay` reports through a parent. It
@@ -11,6 +20,13 @@ its area, and carries what its boards report up under that session. A command
 the parent routes to its area is passed on to the board and answered with the
 parent's transaction id. A parent files a relay's sensor readings by the area
 and node each names, rather than under the relay. Needs rho-robohub 0.4.2.
+
+## [0.4.1] - 2026-11-06
+
+Security: all write paths (frames, device registration, polling, switching,
+sampling-rate, outbox) now require the bearer token when GATEWAY_TOKEN or
+OUTBOX_TOKEN is set. The uplink honours UPLINK_BIND. Frames history no longer
+records redundant sensor entries.
 
 ## [0.4.0] - 2026-11-05
 
@@ -49,10 +65,3 @@ The gateway page shows a frame history, newest first, with selectable windows
 of 10, 25, 50, 100, 500 and 1000 rows and CSV export. A node's `timestamp_ms`
 is its own uptime; the gateway records the wall-clock `received_at_ms` beside
 it and renders that as local date/time. Page and API carry both.
-
-## [0.4.1] - 2026-11-06
-
-Security: all write paths (frames, device registration, polling, switching,
-sampling-rate, outbox) now require the bearer token when GATEWAY_TOKEN or
-OUTBOX_TOKEN is set. The uplink honours UPLINK_BIND. Frames history no longer
-records redundant sensor entries.

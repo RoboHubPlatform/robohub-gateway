@@ -23,6 +23,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -116,9 +117,26 @@ def read_frame(fd, timeout: float = 3.0) -> bytes:
     raise TimeoutError("no frame")
 
 
+# A ticket for the master's API, as the keeper would issue one (set in main).
+TOKEN = ""
+RHO = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "rho", "bin", "rho")
+
+
+def mint_token(home: str) -> str:
+    rho = RHO if os.path.exists(RHO) else "rho"
+    keys = os.path.join(home, ".rho", "auth")
+    os.makedirs(keys, exist_ok=True)
+    subprocess.run([rho, "auth", "keygen", "--dir", keys, "--force"], check=True, capture_output=True, text=True)
+    return subprocess.run([rho, "auth", "ticket", "--private", os.path.join(keys, "private.pem"), "--issuer", "keeper",
+                           "--audience", "gateway", "--subject", "smoke", "--scopes", "*", "--ttl", "1h"],
+                          check=True, capture_output=True, text=True).stdout.strip()
+
+
 def http(method, path, body=None):
     conn = httpclient.HTTPConnection(HOST, REST_PORT, timeout=5)
     headers = {"Content-Type": "application/json"} if body else {}
+    if TOKEN:
+        headers["Authorization"] = f"Bearer {TOKEN}"
     conn.request(method, path, body=body, headers=headers)
     resp = conn.getresponse()
     data = resp.read().decode()
@@ -139,7 +157,10 @@ def control_response(area: int, node: int, opcode: int, result: int, argument: i
 
 
 def main():
+    global TOKEN
     failures = []
+    work = tempfile.mkdtemp(prefix="relay-smoke-")
+    TOKEN = mint_token(work)
 
     # The master's own serial: nothing writes to it, so the relay is the only
     # upstream it has. A pty keeps the port open without a real tty.
@@ -152,6 +173,10 @@ def main():
         "UPLINK_PORT": str(UPLINK_PORT),
         "GATEWAY_MODE": "master",
         "GATEWAY_AREA": "7",
+        "HOME": work,
+        # This relay frames its board's readings plainly; the sealed relay path
+        # is the relay's own test.
+        "ALLOW_PLAIN_FRAMES": "1",
     })
     gateway = subprocess.Popen([GATEWAY_BIN], env=env,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -243,6 +268,10 @@ def main():
         except subprocess.TimeoutExpired:
             proc.kill()
 
+    if failures and os.environ.get("RELAY_DEBUG"):
+        relay.kill(); gateway.kill()
+        print("--- relay ---\n" + relay.stdout.read()[-3000:])
+        print("--- gateway ---\n" + gateway.stdout.read()[-3000:])
     if failures:
         print("\nFAILURES:")
         for f in failures:

@@ -18,11 +18,17 @@ module gateway.secure
 extern fn rho_hmac_sha256_hex(key_hex: string, message_hex: string) string
 extern fn rho_random_hex(bytes: u32) string
 extern fn rho_read_text(path: string) string
+extern fn rho_write_secret(path: string, text: string) bool
+extern fn rho_now_s() u32
 
 const SECURE_FLAG: u32 = 32768
 const MESSAGE_ID_SECURE_HELLO: u32 = 17
 const MESSAGE_ID_SECURE_SESSION: u32 = 18
 const SECURE_LIFETIME_S: u32 = 3600
+// A session's counters are kept on disk every so many frames, and a session
+// restored after a restart takes up past what was kept by as many: a frame
+// recorded before the restart cannot be replayed after it.
+const SECURE_STORE_EVERY: u32 = 64
 
 // The labels the protocol hashes, as hex.
 const SECURE_LABEL_DEV: string = "72682d64657631"
@@ -107,8 +113,130 @@ fn secure_device_key(uid_hex: string) string {
     return str_slice(rho_hmac_sha256_hex(secure_gateway_key(), SECURE_LABEL_DEV + uid_hex), 0, 32)
 }
 
+// secure_now_s is the wall clock: a session's expiry stays right across a
+// restart, which a store of sessions needs, and does not wrap after 49 days of
+// uptime as the millisecond uptime counter does.
 fn secure_now_s() u32 {
-    return gateway_now_ms() / 1000
+    return rho_now_s()
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Sessions kept across a restart                                            */
+/* -------------------------------------------------------------------------- */
+
+// secure_store_path is where the live sessions are kept: GATEWAY_SESSION_FILE,
+// or `sessions` beside the gateway's key — readable by the gateway's user alone,
+// as the key is. "" when the gateway has no key, and so no sessions.
+fn secure_store_path() string {
+    let named: string = getenv("GATEWAY_SESSION_FILE")
+    if named != "" {
+        return named
+    }
+    let key: string = getenv("GATEWAY_KEY_FILE")
+    if key == "" {
+        return ""
+    }
+    var at: i32 = -1
+    var i: u32 = 0
+    while i < strlen(key) {
+        if str_slice(key, i, 1) == "/" {
+            at = i32(i)
+        }
+        i = i + 1
+    }
+    if at < 0 {
+        return "sessions"
+    }
+    return str_slice(key, 0, u32(at)) + "/sessions"
+}
+
+// secure_store writes every live session — `sid|uid|k_up|k_down|expiry|up|down`
+// — and the session the serial link holds, and forgets the expired ones. It is
+// called when a session opens and when a counter passes a multiple of
+// SECURE_STORE_EVERY, so a restart loses neither the sessions nor the counters'
+// high-water marks.
+fn secure_store() void {
+    let path: string = secure_store_path()
+    if path == "" {
+        return
+    }
+    let now: u32 = secure_now_s()
+    var out: string = ""
+    var rest: string = gateway_state_get("secure.sids")
+    var kept: string = ""
+    while rest != "" {
+        let at: i32 = str_index_of(rest, ",")
+        var sid: string = rest
+        if at < 0 {
+            rest = ""
+        } else {
+            sid = str_slice(rest, 0, u32(at))
+            rest = str_slice(rest, u32(at) + 1, strlen(rest) - u32(at) - 1)
+        }
+        let record: string = gateway_state_get("secure.sid." + sid)
+        if sid == "" || record == "" {
+            continue
+        }
+        if now >= u32(int_from_str(secure_field(record, 3))) {
+            // Expired: forgotten here as well as on disk.
+            gateway_state_set("secure.sid." + sid, "")
+            continue
+        }
+        kept = kept + sid + ","
+        out = out + sid + "|" + record + "|" + int_to_str(gateway_state_get_u32("secure.up." + sid)) + "|" +
+            int_to_str(gateway_state_get_u32("secure.down." + sid)) + "\n"
+    }
+    gateway_state_set("secure.sids", kept)
+    out = out + "serial|" + gateway_state_get("secure.serial.sid") + "\n"
+    if !rho_write_secret(path, out) {
+        secure_log("the sessions could not be kept in " + path)
+    }
+}
+
+// secure_restore takes back the sessions a previous run kept, at start: a board
+// that holds one goes on sending under it, rather than going unheard until its
+// session expires. Each counter starts past what was kept by SECURE_STORE_EVERY.
+fn secure_restore() u32 {
+    let path: string = secure_store_path()
+    if path == "" {
+        return 0
+    }
+    let now: u32 = secure_now_s()
+    var restored: u32 = 0
+    var sids: string = ""
+    var rest: string = rho_read_text(path)
+    while rest != "" {
+        let at: i32 = str_index_of(rest, "\n")
+        var line: string = rest
+        if at < 0 {
+            rest = ""
+        } else {
+            line = str_slice(rest, 0, u32(at))
+            rest = str_slice(rest, u32(at) + 1, strlen(rest) - u32(at) - 1)
+        }
+        let sid: string = secure_field(line, 0)
+        if sid == "serial" {
+            gateway_state_set("secure.serial.sid", secure_field(line, 1))
+            continue
+        }
+        let expiry: u32 = u32(int_from_str(secure_field(line, 4)))
+        if strlen(sid) != 4 || expiry <= now {
+            continue
+        }
+        let uid: string = secure_field(line, 1)
+        gateway_state_set("secure.sid." + sid, uid + "|" + secure_field(line, 2) + "|" + secure_field(line, 3) + "|" +
+            int_to_str(expiry))
+        gateway_state_set_u32("secure.up." + sid, u32(int_from_str(secure_field(line, 5))) + SECURE_STORE_EVERY)
+        gateway_state_set_u32("secure.down." + sid, u32(int_from_str(secure_field(line, 6))) + SECURE_STORE_EVERY)
+        gateway_state_set("secure.uid." + uid, sid)
+        sids = sids + sid + ","
+        restored = restored + 1
+    }
+    gateway_state_set("secure.sids", sids)
+    if restored > 0 {
+        secure_log(int_to_str(restored) + " sessions restored")
+    }
+    return restored
 }
 
 // secure_accept_hello opens a session for a board's hello and returns
@@ -132,7 +260,18 @@ fn secure_accept_hello(payload: string) string {
         secure_log("no random source: the hello from " + uid + " was not answered")
         return ""
     }
-    let sid: string = str_slice(random, 0, 4)
+    // A session id is 16 bits: one still in use is not given out again, which
+    // would put another board's frames under this one's keys.
+    var sid: string = str_slice(random, 0, 4)
+    var tries: u32 = 0
+    while tries < 8 && gateway_state_get("secure.sid." + sid) != "" &&
+        secure_now_s() < u32(int_from_str(secure_field(gateway_state_get("secure.sid." + sid), 3))) {
+        let more: string = rho_random_hex(2)
+        if strlen(more) == 4 {
+            sid = more
+        }
+        tries = tries + 1
+    }
     let nonce_g: string = str_slice(random, 4, 16)
     let lifetime: string = secure_hex(robohub_v1_put_u16(u16(SECURE_LIFETIME_S)))
     let session_tag: string = secure_tag(k_dev, SECURE_LABEL_SESSION + uid + nonce_b + sid + nonce_g + lifetime)
@@ -143,6 +282,10 @@ fn secure_accept_hello(payload: string) string {
     gateway_state_set_u32("secure.up." + sid, 0)
     gateway_state_set_u32("secure.down." + sid, 0)
     gateway_state_set("secure.uid." + uid, sid)
+    if str_index_of("," + gateway_state_get("secure.sids"), "," + sid + ",") < 0 {
+        gateway_state_set("secure.sids", gateway_state_get("secure.sids") + sid + ",")
+    }
+    secure_store()
     secure_log("session " + sid + " opened for board " + uid)
     let answer: string = secure_bytes(uid + sid + nonce_g + lifetime + session_tag)
     return sid + "|" + robohub_v1_frame(MESSAGE_ID_SECURE_SESSION, 0, answer)
@@ -157,6 +300,7 @@ fn secure_handle_hello(payload: string) void {
     }
     let sid: string = secure_field(accepted, 0)
     gateway_state_set("secure.serial.sid", sid)
+    secure_store()
     if !gateway_serial_write(str_slice(accepted, strlen(sid) + 1, strlen(accepted) - strlen(sid) - 1)) {
         secure_log("session " + sid + " could not be written to the link")
     }
@@ -229,6 +373,9 @@ fn secure_open(frame: TransportFrame) TransportFrame {
         return secure_refused()
     }
     gateway_state_set_u32("secure.up." + sid, counter)
+    if counter % SECURE_STORE_EVERY == 0 {
+        secure_store()
+    }
     var opened: TransportFrame
     opened.ok = true
     opened.msg_id = frame.msg_id - SECURE_FLAG
@@ -271,6 +418,9 @@ fn secure_seal(sid: string, msg_id: u32, tx_id: u32, payload: string) string {
     }
     let counter: u32 = gateway_state_get_u32("secure.down." + sid) + 1
     gateway_state_set_u32("secure.down." + sid, counter)
+    if counter % SECURE_STORE_EVERY == 0 {
+        secure_store()
+    }
     let flagged: u32 = msg_id + SECURE_FLAG
     let sid_counter: string = secure_bytes(sid) + robohub_v1_put_u32(counter)
     let header: string = secure_hex(robohub_v1_put_u16(u16(flagged)) + robohub_v1_put_u16(u16(tx_id)))

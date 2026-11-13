@@ -12,6 +12,8 @@ opcode and an argument. Run it after `rho build`:
 
     python3 tools/smoke.py
 """
+import hashlib
+import hmac
 import http.client as httpclient
 import json
 import os
@@ -20,6 +22,8 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 
 BIN = os.environ.get("GATEWAY_BIN", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build", "robohub-gateway"))
@@ -31,6 +35,11 @@ AREA = 7
 SAMPLING_RATE_OPCODE = 1
 
 sequence = 0
+
+# A ticket for the gateway, as the keeper would issue one: the API answers only
+# a caller that carries one (set in main).
+TOKEN = ""
+RHO = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "rho", "bin", "rho")
 
 
 def fletcher16(data: bytes) -> int:
@@ -172,6 +181,8 @@ def read_socket_frame(sock, timeout: float = 3.0) -> bytes:
 def http(method, path, body=None):
     conn = httpclient.HTTPConnection(HOST, HTTP_PORT, timeout=5)
     headers = {"Content-Type": "application/json"} if body else {}
+    if TOKEN:
+        headers["Authorization"] = f"Bearer {TOKEN}"
     conn.request(method, path, body=body, headers=headers)
     resp = conn.getresponse()
     data = resp.read().decode()
@@ -179,7 +190,86 @@ def http(method, path, body=None):
     return resp.status, data
 
 
+def mint_token(home: str) -> str:
+    rho = RHO if os.path.exists(RHO) else "rho"
+    keys = os.path.join(home, ".rho", "auth")
+    os.makedirs(keys, exist_ok=True)
+    subprocess.run([rho, "auth", "keygen", "--dir", keys, "--force"], check=True, capture_output=True, text=True)
+    return subprocess.run([rho, "auth", "ticket", "--private", os.path.join(keys, "private.pem"), "--issuer", "keeper",
+                           "--audience", "gateway", "--subject", "smoke", "--scopes", "*", "--ttl", "1h"],
+                          check=True, capture_output=True, text=True).stdout.strip()
+
+
+def wait_ready(proc) -> None:
+    last = None
+    for _ in range(100):
+        try:
+            status, _ = http("GET", "/healthz")
+            if status == 200:
+                return
+            last = f"status {status}"
+        except Exception as exc:  # noqa: BLE001
+            last = f"{type(exc).__name__}: {exc}"
+            time.sleep(0.05)
+    proc.kill()
+    print("FAIL: server did not become ready; last:", last)
+    print(proc.stdout.read())
+    sys.exit(1)
+
+
+def hmac16(key: bytes, message: bytes) -> bytes:
+    return hmac.new(key, message, hashlib.sha256).digest()
+
+
+class Board:
+    """A board's half of robohub-transport's sealed frames, as include/robohub/secure.h
+    has it: a hello, the gateway's session, then frames carrying a counter and a tag."""
+
+    def __init__(self, k_gw: bytes):
+        self.uid = os.urandom(8)
+        self.k_dev = hmac16(k_gw, b"rh-dev1" + self.uid)[:16]
+        self.nonce_b = os.urandom(8)
+        self.sid = b""
+        self.k_up = b""
+
+    def hello(self) -> bytes:
+        tag = hmac16(self.k_dev, b"rh-hello1" + self.uid + self.nonce_b)[:8]
+        return frame(17, 0, self.uid + self.nonce_b + tag)
+
+    def accept(self, payload: bytes) -> None:
+        uid, sid, nonce_g, lifetime, tag = payload[:8], payload[8:10], payload[10:18], payload[18:20], payload[20:28]
+        want = hmac16(self.k_dev, b"rh-session1" + uid + self.nonce_b + sid + nonce_g + lifetime)[:8]
+        assert uid == self.uid and tag == want, "the session did not authenticate"
+        self.sid = sid
+        self.k_up = hmac16(self.k_dev, b"rh-up1" + self.nonce_b + nonce_g)[:16]
+
+    def sealed(self, counter: int, msg_id: int, inner: bytes) -> bytes:
+        flagged = msg_id | 0x8000
+        sid_counter = self.sid + struct.pack("<I", counter)
+        tag = hmac16(self.k_up, struct.pack("<HH", flagged, 0) + sid_counter + inner)[:8]
+        return frame(flagged, 0, sid_counter + inner + tag)
+
+
+def node_temperature(area: int, node: int):
+    status, body = http("GET", "/api/v1/nodes")
+    try:
+        for n in json.loads(body):
+            if n["area_id"] == area and n["node_id"] == node:
+                return n.get("temperature_c")
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def main():
+    global TOKEN
+    work = tempfile.mkdtemp(prefix="gateway-smoke-")
+    TOKEN = mint_token(work)
+    k_gw = os.urandom(32)
+    key_file = os.path.join(work, "gateway.key")
+    with open(key_file, "w") as f:
+        f.write(k_gw.hex() + "\n")
+    os.chmod(key_file, 0o600)
     master, slave = pty.openpty()
     os.set_blocking(master, False)
     slave_name = os.ttyname(slave)
@@ -197,30 +287,18 @@ def main():
         "GATEWAY_MODE": "master",
         "GATEWAY_AREA": str(AREA),
         "UPLINK_PORT": str(UPLINK_PORT),
+        "HOME": work,
+        "GATEWAY_KEY_FILE": key_file,
+        # The sections below drive plain frames, as boards being reflashed send;
+        # the sealed path is driven at the end.
+        "ALLOW_PLAIN_FRAMES": "1",
     })
     proc = subprocess.Popen([BIN], env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
 
     failures = []
 
-    # Wait for the listener.
-    ready = False
-    last = None
-    for _ in range(100):
-        try:
-            status, _ = http("GET", "/healthz")
-            if status == 200:
-                ready = True
-                break
-            last = f"status {status}"
-        except Exception as exc:  # noqa: BLE001
-            last = f"{type(exc).__name__}: {exc}"
-            time.sleep(0.05)
-    if not ready:
-        proc.kill()
-        print("FAIL: server did not become ready; last:", last)
-        print(proc.stdout.read())
-        sys.exit(1)
+    wait_ready(proc)
 
     # 1. Telemetry frame -> state + UDP.
     os.write(master, telemetry_frame(AREA, 1, 24.31, 0, 124500))
@@ -574,6 +652,55 @@ def main():
     status, body = http("POST", "/api/v1/uplink/pump")
     print("PUMP down:", status, body)
     uplink.close()
+
+    # Sealed frames: a board says hello, sends under its session, and is still
+    # heard after the gateway restarts — the session is kept, and its counter
+    # starts past what was kept, so a frame recorded before cannot be replayed.
+    board = Board(k_gw)
+    while True:
+        try:
+            os.read(master, 4096)
+        except BlockingIOError:
+            break
+    os.write(master, board.hello())
+    deadline = time.time() + 5
+    session = None
+    while time.time() < deadline and session is None:
+        msg_id, _, payload = parse_frame(read_frame(master))
+        if msg_id == 18:
+            session = payload
+    if session is None:
+        failures.append("the hello was not answered with a session")
+    else:
+        board.accept(session)
+        sealed_inner = lambda temp: b"\x01" + device(AREA, 11) + struct.pack("<IfI", 1000, temp, 0)
+        os.write(master, board.sealed(1, 0x0201, sealed_inner(21.0)))
+        time.sleep(0.3)
+        if node_temperature(AREA, 11) != 21.0:
+            failures.append(f"a sealed frame was not taken: {node_temperature(AREA, 11)}")
+        sessions = os.path.join(work, "sessions")
+        if not os.path.exists(sessions) or os.stat(sessions).st_mode & 0o777 != 0o600:
+            failures.append("the sessions are not kept readable by the gateway alone")
+
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        proc = subprocess.Popen([BIN], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        wait_ready(proc)
+        os.write(master, board.sealed(2, 0x0201, sealed_inner(22.0)))
+        time.sleep(0.3)
+        if node_temperature(AREA, 11) is not None:
+            failures.append("a counter at or below the kept mark was taken after the restart")
+        os.write(master, board.sealed(70, 0x0201, sealed_inner(23.5)))
+        time.sleep(0.3)
+        if node_temperature(AREA, 11) != 23.5:
+            failures.append(f"the board was not heard after the restart: {node_temperature(AREA, 11)}")
+        os.write(master, board.sealed(70, 0x0201, sealed_inner(99.0)))
+        time.sleep(0.3)
+        if node_temperature(AREA, 11) != 23.5:
+            failures.append("a replayed frame was taken")
 
     proc.terminate()
     try:

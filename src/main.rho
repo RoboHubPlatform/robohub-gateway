@@ -78,6 +78,10 @@ fn init() void {
     // REST_PORT is the gateway's name for the listener; let it stand in for the
     // generated service's RHO_HTTP_ADDR before the address is chosen.
     gateway_config()
+    // Sessions a previous run kept: a board that holds one is heard at once.
+    if secure_restore() > 0 {
+        print("robohub-gateway: boards that held a session are heard again\n")
+    }
     print("robohub-gateway: starting as " + gateway_mode() +
         " in area " + int_to_str(gateway_area()) + "\n")
     // The uplink is where a relay dials in. A gateway with nothing above it —
