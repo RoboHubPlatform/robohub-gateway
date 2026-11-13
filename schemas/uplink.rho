@@ -1,3 +1,15 @@
+//
+// @file uplink.rho
+// @brief L1: the protocol between gateways.
+//
+// @module uplink
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-10-13
+//
+// SPDX-License-Identifier: MIT
+//
+
 module uplink
 
 // L1 — the protocol between gateways.

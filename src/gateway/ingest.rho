@@ -1,3 +1,15 @@
+//
+// @file ingest.rho
+// @brief What a frame from the link means: decoded, checked and recorded.
+//
+// @module gateway.ingest
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-10-09
+//
+// SPDX-License-Identifier: MIT
+//
+
 module gateway.ingest
 
 // What a frame from the link means.

@@ -1,3 +1,15 @@
+//
+// @file main.rho
+// @brief The edge gateway for RoboHub firmware nodes: its routes, its start and its background work.
+//
+// @module gateway
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-10-09
+//
+// SPDX-License-Identifier: MIT
+//
+
 module gateway
 
 // robohub-gateway - the edge gateway for RoboHub firmware nodes.

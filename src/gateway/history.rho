@@ -1,3 +1,15 @@
+//
+// @file history.rho
+// @brief The last frames, in a ring, newest first.
+//
+// @module gateway.history
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-11-01
+//
+// SPDX-License-Identifier: MIT
+//
+
 module gateway.history
 
 // The last frames, in a ring. The newest is row one on the page and in the

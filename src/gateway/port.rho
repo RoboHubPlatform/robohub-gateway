@@ -1,3 +1,15 @@
+//
+// @file port.rho
+// @brief The host half of the gateway, declared: the serial link, the uplink, the clock and the state goroutines share.
+//
+// @module gateway.port
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-10-09
+//
+// SPDX-License-Identifier: MIT
+//
+
 module gateway.port
 
 // The host half of the gateway, declared.

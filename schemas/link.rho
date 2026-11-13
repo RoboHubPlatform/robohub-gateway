@@ -1,3 +1,15 @@
+//
+// @file link.rho
+// @brief L2: the protocol between a board and the gateway it is wired to.
+//
+// @module link
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-10-13
+//
+// SPDX-License-Identifier: MIT
+//
+
 module link
 
 // L2 — the protocol between a board and the gateway it is wired to.

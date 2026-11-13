@@ -1,3 +1,15 @@
+//
+// @file devices.rho
+// @brief Network devices the gateway owns: registered, polled and switched.
+//
+// @module gateway.devices
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-11-02
+//
+// SPDX-License-Identifier: MIT
+//
+
 module gateway.devices
 
 // Network devices the gateway owns.

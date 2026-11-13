@@ -1,3 +1,15 @@
+//
+// @file stream.rho
+// @brief What a valid telemetry frame becomes: the latest state per device, and the event stream.
+//
+// @module gateway.stream
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-10-09
+//
+// SPDX-License-Identifier: MIT
+//
+
 module gateway.stream
 
 // What a valid telemetry frame becomes: the latest state, per device, and one

@@ -1,3 +1,15 @@
+//
+// @file common.rho
+// @brief The identity and the frame families both protocol levels share.
+//
+// @module common
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-10-13
+//
+// SPDX-License-Identifier: MIT
+//
+
 module common
 
 // The identity and the families both protocol levels share.

@@ -1,3 +1,15 @@
+//
+// @file state.rho
+// @brief The REST side: the latest state, and asking a device to change.
+//
+// @module gateway.state
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-10-09
+//
+// SPDX-License-Identifier: MIT
+//
+
 module gateway.state
 
 // The REST side: reading the latest state, asking a device to change, and saying

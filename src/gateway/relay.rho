@@ -1,3 +1,15 @@
+//
+// @file relay.rho
+// @brief Relay mode: this gateway reports through another one.
+//
+// @module gateway.relay
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-11-13
+//
+// SPDX-License-Identifier: MIT
+//
+
 module gateway.relay
 
 // Relay mode: this gateway reports through another one.

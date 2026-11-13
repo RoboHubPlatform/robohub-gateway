@@ -1,3 +1,15 @@
+//
+// @file outbox.rho
+// @brief The durable feed an aggregator reads.
+//
+// @module gateway.outbox
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-11-05
+//
+// SPDX-License-Identifier: MIT
+//
+
 module gateway.outbox
 
 // The durable feed an aggregator reads.

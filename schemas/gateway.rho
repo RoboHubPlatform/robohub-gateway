@@ -1,3 +1,15 @@
+//
+// @file gateway.rho
+// @brief The gateway's whole wire: both protocol levels in one schema.
+//
+// @module gateway.protocol
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-10-13
+//
+// SPDX-License-Identifier: MIT
+//
+
 module gateway.protocol
 
 // The gateway's whole wire: both levels in one schema.

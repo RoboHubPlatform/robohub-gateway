@@ -1,3 +1,15 @@
+//
+// @file security.rho
+// @brief Who may read this gateway and who may command it.
+//
+// @module gateway.security
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-11-06
+//
+// SPDX-License-Identifier: MIT
+//
+
 module gateway.security
 
 // Who may read this gateway and who may command it.
