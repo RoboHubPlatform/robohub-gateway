@@ -22,12 +22,11 @@ code is each without a rebuild:
 | `relay` | no | serial or TCP | serial or TCP |
 | `master` | no | serial or TCP | — |
 
-This service is used today as the **`master`** (or a `relay`): it hears boards on
-its link, keeps each device's latest values, and serves them. The uplink — a
-gateway dialling a parent and pushing readings up, with commands routed down by
-device id — is the next phase; the L1 schema (`schemas/uplink.rho`) and the two
-levels' message families are already declared. The full design is
-[docs/architecture.md](docs/architecture.md).
+This service runs as the **`master`** of a mesh, or as a **`relay`** that reports
+through a parent's uplink, which is how meshes are linked. Relay mode, the
+uplink and its interface (`UPLINK_PORT`, `UPLINK_BIND`), the token scopes every
+route checks and serving HTTPS are described in [docs/index.md](docs/index.md);
+the full design is [docs/architecture.md](docs/architecture.md).
 
 ## Build and run
 
@@ -111,42 +110,12 @@ The answer is kept with the device, so `GET /api/v1/nodes` carries it as a
 `diag` object on that device's record. `probe_ok: 133` is `0x85`: console,
 timer, onewire, uart and net the board has — the probes a Pico node passes.
 
-## Relay mode
+## Relay mode and the uplink
 
-A gateway with `GATEWAY_MODE=relay` and `PARENT_UPLINK` set reports through its
-parent. It is a board of the parent's mesh: it dials the parent's uplink, says
-hello with `RELAY_UID` and opens a session with the key in `RELAY_KEY_FILE` —
-`HMAC-SHA256(K_gw, "rh-dev1" | uid)[0:16]` of the parent's gateway key, which is
-what the parent derives for any board — so the parent needs nothing new to
-authenticate it. It then announces its `GATEWAY_AREA`, and redials and opens a
-new session whenever the connection drops.
-
-What the relay hears from its own boards and from the gateways below it goes up
-under that session: readings, power, state and sensor readings, each naming
-its area and node, so the parent's `GET /api/v1/nodes` lists them. A command the
-parent routes to the relay's area is opened by the relay and passed on to the
-board it names, under the relay's own session with that board; the board's
-answer goes back up with the parent's transaction id.
-
-## The uplink
-
-A gateway with `UPLINK_PORT` set listens for the gateways below it: a relay dials
-in, announces itself with which area it speaks for, and pushes the readings it
-hears. The frames are COBS — the same as a serial link — so a relay sends the
-readings up the way a board sends them in, and one codec reads both.
-
-- `ANNOUNCE` (`0x0101`) binds the child to its link and records the area it owns,
-  so a device in that area is known to be behind it.
-- `READING` (`0x0201`) becomes the **same device record** a reading heard
-  directly becomes, so `GET /api/v1/nodes` lists a board behind a relay exactly
-  as it lists one that is wired in.
-- `POST /api/v1/uplink/pump` drains what has arrived and reports how many frames
-  it applied. The read endpoints drain on their way in, so a listing is current;
-  a supervisor can call the pump to drive a master nothing is asking yet.
-- `POST /api/v1/nodes/{area}/{node}/sampling-rate` sends a control to a named
-  device. One in a **child's area** goes down that child's uplink and is answered
-  asynchronously (the reply arrives on the uplink and is applied when it is
-  drained); one on this gateway's own link is answered in the same request.
+A gateway can report through a parent (`GATEWAY_MODE=relay`, `PARENT_UPLINK`)
+and can listen for the gateways and Wi-Fi boards below it (`UPLINK_PORT`,
+confined to one interface with `UPLINK_BIND`). Both, and how a command is routed
+down by area, are in [docs/index.md](docs/index.md#relay-mode).
 
 ### The whole tree on one machine
 
@@ -263,7 +232,8 @@ rho flash -target pico2w -project . build/output/telemetry.elf
 cd "$ROBOHUB_WORKSPACE/robohub-gateway"
 rho run .                       # SERIAL_PORT defaults to /dev/ttyACM0
 
-# 3. Watch it.
+# 3. Watch it. Every route but /healthz needs a keeper token with this
+#    gateway's scope (see "Access and TLS"); pass it as -H "Authorization: Bearer ...".
 curl -s localhost:8080/api/v1/telemetry/temperature
 # {"area_id":7,"node_id":1,"temperature_c":24.38,"status":"OK","last_updated_ms":186095}
 curl -s localhost:8080/api/v1/nodes
@@ -389,7 +359,7 @@ page renders `received_at_ms` as local date/time in the browser. It links to `/a
 
 ## Release history
 
-[CHANGELOG.md](CHANGELOG.md) — the changes in 0.2.0 and earlier releases.
+[CHANGELOG.md](CHANGELOG.md), one section per release.
 
 ## Durable telemetry outbox
 
@@ -411,10 +381,9 @@ and node it is given; a reading that arrived unauthenticated, or from a gateway
 below, has none. The generated node firmware writes a module field as
 `<tag>.<field>`, the tag being the start of the module's own id (firmware built
 before that wrote `m<index>.<field>`); the live page lists those in its
-`sensors` object and the frames history.
- Reading it takes
-a token with `gateway:<id>:read`, and `OUTBOX_MAX_ROWS` bounds what waits for an
-aggregator.
+`sensors` object and the frames history. Reading it takes a token with
+`gateway:<id>:read`, and `OUTBOX_MAX_ROWS` bounds what waits for an aggregator.
+
 ## Authenticated frames
 
 Every frame between a board and this gateway is authenticated (robohub-transport's
@@ -435,22 +404,9 @@ uplink is the connected board's own and is kept under its id; what a relay
 carries up is placed by area and node. The uplink is drained by the gateway's own
 loop, so a session is answered while the other end waits for it.
 
-## Uplink interface and access
+## Access and TLS
 
-A gateway with an uplink may confine it to one interface:
-
-```sh
-UPLINK_BIND=127.0.0.1   # loopback only
-UPLINK_BIND=192.168.50.2  # one LAN interface
-```
-
-Without it, the uplink listens on every interface, which is the right default
-for a relay mesh and the wrong one for a shared network.
-
-Every route but `/healthz` takes a short-lived token keeper issued for the audience
-`gateway`, verified with keeper's public key (`RHO_AUTH_PUBLIC_KEY`). Its scopes
-name this gateway (`GATEWAY_ID`) and what the caller may do: `gateway:<id>:read`
-for telemetry, the outbox, nodes and diagnostics; `gateway:<id>:command` for
-frames, device registration, polling, switching, sampling rate and the uplink.
-There is no static token. Mesh, which reads and commands its gateways, holds a
-keeper client credential and asks for these tokens itself.
+Every route but `/healthz` takes a short-lived keeper token whose scopes name
+this gateway (`gateway:<id>:read`, `gateway:<id>:command`); there is no static
+token. With `RHO_TLS_CERT` and `RHO_TLS_KEY` set, the API is served over HTTPS.
+See [docs/index.md](docs/index.md#access).
