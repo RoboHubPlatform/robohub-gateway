@@ -442,3 +442,7 @@ Every route but `/healthz` takes a short-lived keeper token whose scopes name
 this gateway (`gateway:<id>:read`, `gateway:<id>:command`); there is no static
 token. With `RHO_TLS_CERT` and `RHO_TLS_KEY` set, the API is served over HTTPS.
 See [docs/index.md](docs/index.md#access).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
