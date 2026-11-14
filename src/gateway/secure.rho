@@ -25,7 +25,13 @@ module gateway.secure
 // nonce, and from then on every frame either way carries a counter and a tag.
 // A frame that does not open is dropped. A plain frame is dropped too, unless
 // the deployment sets ALLOW_PLAIN_FRAMES=1 while boards are being reflashed, in
-// which case it is accepted and a warning is logged.
+// which case it is accepted and a warning is logged. That allowance is the
+// serial link's alone: the uplink is a network, and a plain frame on it is never
+// taken.
+//
+// Which boards may open a session at all is the node manifest's to say
+// (gateway/manifest.rho): with one, a board that is not in it, or is revoked,
+// is not answered, and a session is held to the connection it was opened on.
 
 extern fn rho_hmac_sha256_hex(key_hex: string, message_hex: string) string
 extern fn rho_random_hex(bytes: u32) string
@@ -37,10 +43,15 @@ const SECURE_FLAG: u32 = 32768
 const MESSAGE_ID_SECURE_HELLO: u32 = 17
 const MESSAGE_ID_SECURE_SESSION: u32 = 18
 const SECURE_LIFETIME_S: u32 = 3600
-// A session's counters are kept on disk every so many frames, and a session
-// restored after a restart takes up past what was kept by as many: a frame
-// recorded before the restart cannot be replayed after it.
+// A session's counters are kept on disk whenever one has moved this far past
+// what was last kept, and a session restored after a restart takes up twice as
+// far past it: a frame recorded before the restart cannot be replayed after it.
 const SECURE_STORE_EVERY: u32 = 64
+// How many of a board's latest hello nonces are remembered, so a recorded hello
+// is not answered again.
+const SECURE_NONCES_KEPT: u32 = 8
+// A hello that does not authenticate is said at most once in this many seconds.
+const SECURE_BAD_HELLO_QUIET_S: u32 = 60
 
 // The labels the protocol hashes, as hex.
 const SECURE_LABEL_DEV: string = "72682d64657631"
@@ -95,6 +106,22 @@ fn secure_tag(key_hex: string, message_hex: string) string {
     return str_slice(rho_hmac_sha256_hex(key_hex, message_hex), 0, 16)
 }
 
+// secure_equal compares two tags without stopping at the first difference, so
+// the time a comparison takes does not say how much of a forged tag was right.
+// The lengths are not secret; a tag is always 16 hex digits.
+fn secure_equal(a: string, b: string) bool {
+    if strlen(a) != strlen(b) {
+        return false
+    }
+    var difference: u32 = 0
+    var i: u32 = 0
+    while i < strlen(a) {
+        difference = difference | (u32(str_at(a, i)) ^ u32(str_at(b, i)))
+        i = i + 1
+    }
+    return difference == 0
+}
+
 fn secure_gateway_key() string {
     let cached: string = gateway_state_get("secure.k_gw")
     if cached != "" {
@@ -136,14 +163,10 @@ fn secure_now_s() u32 {
 /*  Sessions kept across a restart                                            */
 /* -------------------------------------------------------------------------- */
 
-// secure_store_path is where the live sessions are kept: GATEWAY_SESSION_FILE,
-// or `sessions` beside the gateway's key — readable by the gateway's user alone,
-// as the key is. "" when the gateway has no key, and so no sessions.
-fn secure_store_path() string {
-    let named: string = getenv("GATEWAY_SESSION_FILE")
-    if named != "" {
-        return named
-    }
+// secure_key_dir is the directory that holds the gateway's key, where the
+// sessions and the node manifest are kept beside it: "" when the gateway has no
+// key file, and "." when the key is named without a directory.
+fn secure_key_dir() string {
     let key: string = getenv("GATEWAY_KEY_FILE")
     if key == "" {
         return ""
@@ -157,15 +180,112 @@ fn secure_store_path() string {
         i = i + 1
     }
     if at < 0 {
-        return "sessions"
+        return "."
     }
-    return str_slice(key, 0, u32(at)) + "/sessions"
+    if at == 0 {
+        return "/"
+    }
+    return str_slice(key, 0, u32(at))
 }
 
-// secure_store writes every live session — `sid|uid|k_up|k_down|expiry|up|down`
-// — and the session the serial link holds, and forgets the expired ones. It is
-// called when a session opens and when a counter passes a multiple of
-// SECURE_STORE_EVERY, so a restart loses neither the sessions nor the counters'
+// secure_store_path is where the live sessions are kept: GATEWAY_SESSION_FILE,
+// or `sessions` beside the gateway's key — readable by the gateway's user alone,
+// as the key is. "" when the gateway has no key, and so no sessions.
+fn secure_store_path() string {
+    let named: string = getenv("GATEWAY_SESSION_FILE")
+    if named != "" {
+        return named
+    }
+    let dir: string = secure_key_dir()
+    if dir == "" {
+        return ""
+    }
+    if dir == "." {
+        return "sessions"
+    }
+    if dir == "/" {
+        return "/sessions"
+    }
+    return dir + "/sessions"
+}
+
+// secure_live is whether a session id names a session that has not expired.
+fn secure_live(sid: string) bool {
+    if sid == "" {
+        return false
+    }
+    let record: string = gateway_state_get("secure.sid." + sid)
+    return record != "" && secure_now_s() < u32(int_from_str(secure_field(record, 3)))
+}
+
+// secure_sid_uid is the board a session was opened for, or "".
+fn secure_sid_uid(sid: string) string {
+    if sid == "" {
+        return ""
+    }
+    return secure_field(gateway_state_get("secure.sid." + sid), 0)
+}
+
+// secure_list_has is whether a list kept as `,a,b,` holds an item.
+fn secure_list_has(list: string, item: string) bool {
+    return item != "" && str_index_of(list, "," + item + ",") >= 0
+}
+
+// secure_unroute forgets that a session's connection speaks for an area, when
+// the route is still the one that session announced.
+fn secure_unroute(sid: string, area: string) void {
+    let child: u32 = gateway_state_get_u32("area." + area)
+    if child != 0 && gateway_state_get("secure.child." + int_to_str(child) + ".sid") == sid {
+        gateway_state_set_u32("area." + area, 0)
+        gateway_state_set("secure.child." + int_to_str(child) + ".sid", "")
+    }
+}
+
+// secure_drop_session forgets a session and everything that pointed at it: the
+// routes its connection announced, and the serial link's hold on it. Its board
+// has to say hello again, which a revoked board is not answered for.
+fn secure_drop_session(sid: string) void {
+    if sid == "" {
+        return
+    }
+    let uid: string = secure_sid_uid(sid)
+    var rest: string = gateway_state_get("secure.sid." + sid + ".areas")
+    while rest != "" {
+        let at: i32 = str_index_of(rest, ",")
+        var area: string = rest
+        if at < 0 {
+            rest = ""
+        } else {
+            area = str_slice(rest, 0, u32(at))
+            rest = str_slice(rest, u32(at) + 1, strlen(rest) - u32(at) - 1)
+        }
+        if area != "" {
+            secure_unroute(sid, area)
+        }
+    }
+    gateway_state_set("secure.sid." + sid + ".areas", "")
+    gateway_state_set("secure.sid." + sid + ".link", "")
+    gateway_state_set("secure.sid." + sid, "")
+    if gateway_state_get("secure.serial.sid") == sid {
+        gateway_state_set("secure.serial.sid", "")
+    }
+    if gateway_state_get("secure.serial.pending") == sid {
+        gateway_state_set("secure.serial.pending", "")
+    }
+    if uid != "" && gateway_state_get("secure.uid." + uid) == sid {
+        gateway_state_set("secure.uid." + uid, gateway_state_get("secure.uid." + uid + ".pending"))
+        gateway_state_set("secure.uid." + uid + ".pending", "")
+    }
+    if uid != "" && gateway_state_get("secure.uid." + uid + ".pending") == sid {
+        gateway_state_set("secure.uid." + uid + ".pending", "")
+    }
+}
+
+// secure_store writes every live session — `sid|uid|k_up|k_down|expiry|up|down|link`
+// — the session the serial link holds and the one it is about to, and each
+// board's latest hello nonces, and forgets the expired sessions. It is called
+// when a session opens and when a counter has moved SECURE_STORE_EVERY past what
+// was last kept, so a restart loses neither the sessions nor the counters'
 // high-water marks.
 fn secure_store() void {
     let path: string = secure_store_path()
@@ -191,23 +311,51 @@ fn secure_store() void {
         }
         if now >= u32(int_from_str(secure_field(record, 3))) {
             // Expired: forgotten here as well as on disk.
-            gateway_state_set("secure.sid." + sid, "")
+            secure_drop_session(sid)
             continue
         }
         kept = kept + sid + ","
         out = out + sid + "|" + record + "|" + int_to_str(gateway_state_get_u32("secure.up." + sid)) + "|" +
-            int_to_str(gateway_state_get_u32("secure.down." + sid)) + "\n"
+            int_to_str(gateway_state_get_u32("secure.down." + sid)) + "|" + gateway_state_get("secure.sid." + sid + ".link") + "\n"
     }
     gateway_state_set("secure.sids", kept)
-    out = out + "serial|" + gateway_state_get("secure.serial.sid") + "\n"
+    out = out + "serial|" + gateway_state_get("secure.serial.sid") + "|" + gateway_state_get("secure.serial.pending") + "\n"
+    var uids: string = gateway_state_get("secure.nonce_uids")
+    while uids != "" {
+        let at: i32 = str_index_of(uids, ",")
+        var uid: string = uids
+        if at < 0 {
+            uids = ""
+        } else {
+            uid = str_slice(uids, 0, u32(at))
+            uids = str_slice(uids, u32(at) + 1, strlen(uids) - u32(at) - 1)
+        }
+        let nonces: string = gateway_state_get("secure.nonces." + uid)
+        if uid != "" && nonces != "" {
+            out = out + "nonce|" + uid + "|" + nonces + "\n"
+        }
+    }
     if !rho_write_secret(path, out) {
         secure_log("the sessions could not be kept in " + path)
+        return
+    }
+    // What is on disk now is the mark a counter is measured from.
+    var marks: string = kept
+    while marks != "" {
+        let at: i32 = str_index_of(marks, ",")
+        let sid: string = str_slice(marks, 0, u32(at))
+        marks = str_slice(marks, u32(at) + 1, strlen(marks) - u32(at) - 1)
+        gateway_state_set_u32("secure.up_saved." + sid, gateway_state_get_u32("secure.up." + sid))
+        gateway_state_set_u32("secure.down_saved." + sid, gateway_state_get_u32("secure.down." + sid))
     }
 }
 
 // secure_restore takes back the sessions a previous run kept, at start: a board
 // that holds one goes on sending under it, rather than going unheard until its
-// session expires. Each counter starts past what was kept by SECURE_STORE_EVERY.
+// session expires. A counter is kept once it has moved SECURE_STORE_EVERY past
+// the last mark, so what was used before the restart is below the kept mark plus
+// SECURE_STORE_EVERY; each starts at twice that past the mark, which leaves no
+// frame recorded before the restart that could be replayed after it.
 fn secure_restore() u32 {
     let path: string = secure_store_path()
     if path == "" {
@@ -216,6 +364,7 @@ fn secure_restore() u32 {
     let now: u32 = secure_now_s()
     var restored: u32 = 0
     var sids: string = ""
+    var uids: string = ""
     var rest: string = rho_read_text(path)
     while rest != "" {
         let at: i32 = str_index_of(rest, "\n")
@@ -229,6 +378,15 @@ fn secure_restore() u32 {
         let sid: string = secure_field(line, 0)
         if sid == "serial" {
             gateway_state_set("secure.serial.sid", secure_field(line, 1))
+            gateway_state_set("secure.serial.pending", secure_field(line, 2))
+            continue
+        }
+        if sid == "nonce" {
+            let uid: string = secure_field(line, 1)
+            if strlen(uid) == 16 && !secure_list_has("," + uids, uid) {
+                gateway_state_set("secure.nonces." + uid, secure_field(line, 2))
+                uids = uids + uid + ","
+            }
             continue
         }
         let expiry: u32 = u32(int_from_str(secure_field(line, 4)))
@@ -236,19 +394,76 @@ fn secure_restore() u32 {
             continue
         }
         let uid: string = secure_field(line, 1)
+        let up: u32 = u32(int_from_str(secure_field(line, 5)))
+        let down: u32 = u32(int_from_str(secure_field(line, 6)))
         gateway_state_set("secure.sid." + sid, uid + "|" + secure_field(line, 2) + "|" + secure_field(line, 3) + "|" +
             int_to_str(expiry))
-        gateway_state_set_u32("secure.up." + sid, u32(int_from_str(secure_field(line, 5))) + SECURE_STORE_EVERY)
-        gateway_state_set_u32("secure.down." + sid, u32(int_from_str(secure_field(line, 6))) + SECURE_STORE_EVERY)
+        gateway_state_set_u32("secure.up." + sid, up + SECURE_STORE_EVERY + SECURE_STORE_EVERY)
+        gateway_state_set_u32("secure.down." + sid, down + SECURE_STORE_EVERY + SECURE_STORE_EVERY)
+        // The mark stays what the disk holds, so the first frame after the
+        // restart moves the kept mark up past the restored counters.
+        gateway_state_set_u32("secure.up_saved." + sid, up)
+        gateway_state_set_u32("secure.down_saved." + sid, down)
         gateway_state_set("secure.uid." + uid, sid)
+        // The link a session is held to comes back with it when it names one
+        // that outlives a restart: the serial link, or the relay a board is
+        // behind. A connection number does not: the connection is gone.
+        let link: string = secure_field(line, 7)
+        if link == "serial" || str_index_of(link, "via:") == 0 {
+            gateway_state_set("secure.sid." + sid + ".link", link)
+        } else {
+            gateway_state_set("secure.sid." + sid + ".link", "")
+        }
         sids = sids + sid + ","
         restored = restored + 1
     }
     gateway_state_set("secure.sids", sids)
+    gateway_state_set("secure.nonce_uids", uids)
     if restored > 0 {
         secure_log(int_to_str(restored) + " sessions restored")
     }
     return restored
+}
+
+// secure_hello_seen is whether a board has said hello with this nonce before:
+// a recorded hello, sent again. Its latest SECURE_NONCES_KEPT nonces are
+// remembered, and kept with the sessions across a restart.
+fn secure_hello_seen(uid: string, nonce_b: string) bool {
+    return secure_list_has("," + gateway_state_get("secure.nonces." + uid), nonce_b)
+}
+
+// secure_hello_remember records a nonce a board's hello was answered for.
+fn secure_hello_remember(uid: string, nonce_b: string) void {
+    var nonces: string = gateway_state_get("secure.nonces." + uid) + nonce_b + ","
+    // Each nonce is 16 hex digits and a comma.
+    while strlen(nonces) > SECURE_NONCES_KEPT * 17 {
+        nonces = str_slice(nonces, 17, strlen(nonces) - 17)
+    }
+    gateway_state_set("secure.nonces." + uid, nonces)
+    if !secure_list_has("," + gateway_state_get("secure.nonce_uids"), uid) {
+        gateway_state_set("secure.nonce_uids", gateway_state_get("secure.nonce_uids") + uid + ",")
+    }
+}
+
+// secure_bad_hello says a hello did not authenticate — at most once a
+// minute, with how many were not said, so a flood of forged hellos does not
+// become a flood of log lines.
+fn secure_bad_hello(uid: string) void {
+    let now: u32 = secure_now_s()
+    let last: u32 = gateway_state_get_u32("secure.bad_hello_at")
+    let quiet: u32 = gateway_state_get_u32("secure.bad_hello_quiet")
+    if last != 0 && now - last < SECURE_BAD_HELLO_QUIET_S {
+        gateway_state_set_u32("secure.bad_hello_quiet", quiet + 1)
+        return
+    }
+    gateway_state_set_u32("secure.bad_hello_at", now)
+    gateway_state_set_u32("secure.bad_hello_quiet", 0)
+    if quiet > 0 {
+        secure_log("a hello did not authenticate: uid " + uid + " (and " + int_to_str(quiet) +
+            " more since the last said)")
+        return
+    }
+    secure_log("a hello did not authenticate: uid " + uid)
 }
 
 // secure_accept_hello opens a session for a board's hello and returns
@@ -256,6 +471,19 @@ fn secure_restore() u32 {
 // came from, or "" when the hello is not answered. A hello whose tag does not
 // match the board's key is not.
 fn secure_accept_hello(payload: string) string {
+    let accepted: string = secure_accept_hello_answer(payload)
+    if accepted == "" {
+        return ""
+    }
+    return str_slice(accepted, 0, 5) + robohub_v1_frame(MESSAGE_ID_SECURE_SESSION, 0,
+        str_slice(accepted, 5, strlen(accepted) - 5))
+}
+
+// secure_accept_hello_answer opens a session for a board's hello and returns
+// `<sid>|<session payload>`: the answer's bytes, for a caller that frames it
+// itself — inside a RELAYED message, for a board behind a relay. "" when the
+// hello is not answered.
+fn secure_accept_hello_answer(payload: string) string {
     if strlen(payload) != 24 {
         return ""
     }
@@ -273,8 +501,23 @@ fn secure_accept_hello(payload: string) string {
     let nonce_b: string = secure_hex(str_slice(payload, 8, 8))
     let tag: string = secure_hex(str_slice(payload, 16, 8))
     let k_dev: string = secure_device_key(uid)
-    if secure_tag(k_dev, SECURE_LABEL_HELLO + uid + nonce_b) != tag {
-        secure_log("a hello did not authenticate: uid " + uid)
+    if !secure_equal(secure_tag(k_dev, SECURE_LABEL_HELLO + uid + nonce_b), tag) {
+        secure_bad_hello(uid)
+        return ""
+    }
+    // A hello is answered once: the same nonce again is a recording.
+    if secure_hello_seen(uid, nonce_b) {
+        let replayed: u32 = gateway_state_get_u32("secure.hello_replayed")
+        gateway_state_set_u32("secure.hello_replayed", replayed + 1)
+        manifest_say(uid, "replay", "a hello from board " + uid + " was refused: it repeats one already answered")
+        return ""
+    }
+    // A board the node manifest does not list, or lists as revoked, is not
+    // given a session, however well its key derives.
+    manifest_refresh(false)
+    let refused: string = manifest_refusal(uid)
+    if refused != "" {
+        manifest_say(uid, "hello", "a hello from board " + uid + " was refused: " + refused)
         return ""
     }
     let random: string = rho_random_hex(10)
@@ -282,18 +525,24 @@ fn secure_accept_hello(payload: string) string {
         secure_log("no random source: the hello from " + uid + " was not answered")
         return ""
     }
-    // A session id is 16 bits: one still in use is not given out again, which
-    // would put another board's frames under this one's keys.
+    // A session id is 16 bits: one still in use is never given out again, which
+    // would put another board's frames under this one's keys. When every try
+    // lands on a live one the hello is refused, rather than a session lost.
     var sid: string = str_slice(random, 0, 4)
     var tries: u32 = 0
-    while tries < 8 && gateway_state_get("secure.sid." + sid) != "" &&
-        secure_now_s() < u32(int_from_str(secure_field(gateway_state_get("secure.sid." + sid), 3))) {
+    while tries < 8 && secure_live(sid) {
         let more: string = rho_random_hex(2)
         if strlen(more) == 4 {
             sid = more
         }
         tries = tries + 1
     }
+    if secure_live(sid) {
+        secure_log("no free session id: the hello from " + uid + " was refused")
+        return ""
+    }
+    // An expired session under the same id leaves nothing behind it.
+    secure_drop_session(sid)
     let nonce_g: string = str_slice(random, 4, 16)
     let lifetime: string = secure_hex(robohub_v1_put_u16(u16(SECURE_LIFETIME_S)))
     let session_tag: string = secure_tag(k_dev, SECURE_LABEL_SESSION + uid + nonce_b + sid + nonce_g + lifetime)
@@ -303,25 +552,45 @@ fn secure_accept_hello(payload: string) string {
         int_to_str(secure_now_s() + SECURE_LIFETIME_S))
     gateway_state_set_u32("secure.up." + sid, 0)
     gateway_state_set_u32("secure.down." + sid, 0)
-    gateway_state_set("secure.uid." + uid, sid)
+    gateway_state_set_u32("secure.up_saved." + sid, 0)
+    gateway_state_set_u32("secure.down_saved." + sid, 0)
+    // A board that already holds a live session keeps it as the one frames to
+    // it are sealed under until a frame comes under the new one: a hello alone
+    // does not move where its commands go.
+    if secure_live(gateway_state_get("secure.uid." + uid)) {
+        gateway_state_set("secure.uid." + uid + ".pending", sid)
+    } else {
+        gateway_state_set("secure.uid." + uid, sid)
+        gateway_state_set("secure.uid." + uid + ".pending", "")
+    }
+    gateway_state_set("secure.sid." + sid + ".link", "")
+    secure_hello_remember(uid, nonce_b)
     if str_index_of("," + gateway_state_get("secure.sids"), "," + sid + ",") < 0 {
         gateway_state_set("secure.sids", gateway_state_get("secure.sids") + sid + ",")
     }
     secure_store()
     secure_log("session " + sid + " opened for board " + uid)
-    let answer: string = secure_bytes(uid + sid + nonce_g + lifetime + session_tag)
-    return sid + "|" + robohub_v1_frame(MESSAGE_ID_SECURE_SESSION, 0, answer)
+    return sid + "|" + secure_bytes(uid + sid + nonce_g + lifetime + session_tag)
 }
 
 // secure_handle_hello answers a hello heard on this gateway's serial link, on
-// that link, and makes the session the one frames down that link are sealed under.
+// that link. The new session becomes the one frames down the link are sealed
+// under once a frame sealed under it has come up — so a hello replayed onto the
+// link cannot take the link from the board that holds it — or at once when the
+// link holds no live session.
 fn secure_handle_hello(payload: string) void {
     let accepted: string = secure_accept_hello(payload)
     if accepted == "" {
         return
     }
     let sid: string = secure_field(accepted, 0)
-    gateway_state_set("secure.serial.sid", sid)
+    gateway_state_set("secure.sid." + sid + ".link", "serial")
+    if secure_live(gateway_state_get("secure.serial.sid")) {
+        gateway_state_set("secure.serial.pending", sid)
+    } else {
+        gateway_state_set("secure.serial.sid", sid)
+        gateway_state_set("secure.serial.pending", "")
+    }
     secure_store()
     if !gateway_serial_write(str_slice(accepted, strlen(sid) + 1, strlen(accepted) - strlen(sid) - 1)) {
         secure_log("session " + sid + " could not be written to the link")
@@ -338,6 +607,8 @@ fn secure_handle_uplink_hello(payload: string, connection: u32) void {
     }
     let sid: string = secure_field(accepted, 0)
     gateway_state_set("secure.conn." + int_to_str(connection) + ".sid", sid)
+    gateway_state_set("secure.sid." + sid + ".link", "conn:" + int_to_str(connection))
+    secure_store()
     if !gateway_uplink_reply(connection, str_slice(accepted, strlen(sid) + 1, strlen(accepted) - strlen(sid) - 1)) {
         secure_log("session " + sid + " could not be written to its connection")
     }
@@ -369,15 +640,20 @@ fn secure_refused() TransportFrame {
     return frame
 }
 
-// secure_open opens a secured frame: the session must be current, the counter
-// greater than the last accepted, and the tag the session's. The frame handed on
-// carries the message id without the flag and the payload inside.
-fn secure_open(frame: TransportFrame) TransportFrame {
+// secure_open opens a secured frame: the session must be current and one of
+// the two the link it arrived on holds (an id from anywhere else is refused, so
+// a session is bound to its connection), the counter greater than the last
+// accepted, and the tag the session's. The frame handed on carries the message
+// id without the flag and the payload inside.
+fn secure_open(frame: TransportFrame, bound: string, also: string) TransportFrame {
     let payload: string = frame.payload
     if strlen(payload) < 14 {
         return secure_refused()
     }
     let sid: string = secure_hex(str_slice(payload, 0, 2))
+    if sid != bound && sid != also {
+        return secure_refused()
+    }
     let record: string = gateway_state_get("secure.sid." + sid)
     if record == "" || secure_now_s() >= u32(int_from_str(secure_field(record, 3))) {
         return secure_refused()
@@ -391,11 +667,18 @@ fn secure_open(frame: TransportFrame) TransportFrame {
     let header: string = secure_hex(robohub_v1_put_u16(u16(frame.msg_id)) + robohub_v1_put_u16(u16(frame.tx_id)))
     let expected: string = secure_tag(secure_field(record, 1),
         header + secure_hex(str_slice(payload, 0, 6)) + secure_hex(inner))
-    if expected != secure_hex(str_slice(payload, 6 + body_length, 8)) {
+    if !secure_equal(expected, secure_hex(str_slice(payload, 6 + body_length, 8))) {
         return secure_refused()
     }
     gateway_state_set_u32("secure.up." + sid, counter)
-    if counter % SECURE_STORE_EVERY == 0 {
+    // The first frame under a board's new session makes it the one frames to
+    // the board are sealed under.
+    let uid: string = secure_field(record, 0)
+    if gateway_state_get("secure.uid." + uid + ".pending") == sid {
+        gateway_state_set("secure.uid." + uid, sid)
+        gateway_state_set("secure.uid." + uid + ".pending", "")
+    }
+    if counter >= gateway_state_get_u32("secure.up_saved." + sid) + SECURE_STORE_EVERY {
         secure_store()
     }
     var opened: TransportFrame
@@ -404,6 +687,44 @@ fn secure_open(frame: TransportFrame) TransportFrame {
     opened.tx_id = frame.tx_id
     opened.payload = inner
     return opened
+}
+
+// secure_open_serial opens a frame from the serial link, under the session the
+// link holds or the one a hello on it has just opened; the first frame under the
+// new one makes it the link's.
+fn secure_open_serial(frame: TransportFrame) TransportFrame {
+    let pending: string = gateway_state_get("secure.serial.pending")
+    // Another board on the same serial bus holds its own session on the link.
+    let named: string = secure_frame_sid(frame)
+    if named != "" && named != pending && named != gateway_state_get("secure.serial.sid") &&
+        gateway_state_get("secure.sid." + named + ".link") == "serial" {
+        return secure_open(frame, named, named)
+    }
+    let opened: TransportFrame = secure_open(frame, gateway_state_get("secure.serial.sid"), pending)
+    if opened.ok && pending != "" && secure_frame_sid(frame) == pending {
+        gateway_state_set("secure.serial.sid", pending)
+        gateway_state_set("secure.serial.pending", "")
+        secure_store()
+    }
+    return opened
+}
+
+// secure_open_uplink opens a frame from one uplink connection, under the session
+// that connection opened and no other.
+fn secure_open_uplink(frame: TransportFrame, connection: u32) TransportFrame {
+    let bound: string = gateway_state_get("secure.conn." + int_to_str(connection) + ".sid")
+    if bound == "" {
+        return secure_refused()
+    }
+    return secure_open(frame, bound, bound)
+}
+
+// secure_frame_sid is the session id a sealed frame names, as 4 hex digits.
+fn secure_frame_sid(frame: TransportFrame) string {
+    if strlen(frame.payload) < 2 {
+        return ""
+    }
+    return secure_hex(str_slice(frame.payload, 0, 2))
 }
 
 // secure_frame_source is the board a sealed frame came from: the id its session
@@ -425,27 +746,143 @@ fn secure_frame_source(frame: TransportFrame) string {
 // plain frames are allowed, and "" when neither, so nothing unauthenticated is
 // sent to a board that expects authentication.
 fn secure_frame_down(msg_id: u32, tx_id: u32, payload: string) string {
-    return secure_seal(gateway_state_get("secure.serial.sid"), msg_id, tx_id, payload)
-}
-
-// secure_seal is the encoded frame for a message sealed under one session, plain
-// when there is none and plain frames are allowed, and "" otherwise.
-fn secure_seal(sid: string, msg_id: u32, tx_id: u32, payload: string) string {
-    let record: string = gateway_state_get("secure.sid." + sid)
-    if sid == "" || record == "" || secure_now_s() >= u32(int_from_str(secure_field(record, 3))) {
+    let sid: string = gateway_state_get("secure.serial.sid")
+    if !secure_live(sid) {
         if secure_plain_allowed() {
             return robohub_v1_frame(msg_id, tx_id, payload)
         }
         return ""
     }
+    return secure_seal(sid, msg_id, tx_id, payload)
+}
+
+// secure_seal is the encoded frame for a message sealed under one session, and
+// "" when the session is not current. It is never plain: a frame for an uplink
+// connection is sealed or not sent, whatever ALLOW_PLAIN_FRAMES says.
+fn secure_seal(sid: string, msg_id: u32, tx_id: u32, payload: string) string {
+    let sealed: string = secure_seal_payload(sid, msg_id, tx_id, payload)
+    if sealed == "" {
+        return ""
+    }
+    return robohub_v1_frame(msg_id + SECURE_FLAG, tx_id, sealed)
+}
+
+// secure_seal_payload is the sealed payload — sid, counter, payload and tag —
+// for a message under one session, sent with the id msg_id + SECURE_FLAG; ""
+// when the session is not current.
+fn secure_seal_payload(sid: string, msg_id: u32, tx_id: u32, payload: string) string {
+    if !secure_live(sid) {
+        return ""
+    }
+    let record: string = gateway_state_get("secure.sid." + sid)
     let counter: u32 = gateway_state_get_u32("secure.down." + sid) + 1
     gateway_state_set_u32("secure.down." + sid, counter)
-    if counter % SECURE_STORE_EVERY == 0 {
+    if counter >= gateway_state_get_u32("secure.down_saved." + sid) + SECURE_STORE_EVERY {
         secure_store()
     }
     let flagged: u32 = msg_id + SECURE_FLAG
     let sid_counter: string = secure_bytes(sid) + robohub_v1_put_u32(counter)
     let header: string = secure_hex(robohub_v1_put_u16(u16(flagged)) + robohub_v1_put_u16(u16(tx_id)))
     let tag: string = secure_tag(secure_field(record, 2), header + secure_hex(sid_counter) + secure_hex(payload))
-    return robohub_v1_frame(flagged, tx_id, sid_counter + payload + secure_bytes(tag))
+    return sid_counter + payload + secure_bytes(tag)
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Where a session's frames go                                               */
+/* -------------------------------------------------------------------------- */
+
+// secure_sid_link is the link a session is held to: `serial`, `conn:<n>` for an
+// uplink connection, `via:<relay uid>:<port>` for a board behind a relay,
+// `http` for one that posted its hello, or "" when it is not known. A session
+// the serial link holds from before links were kept is the serial link's.
+fn secure_sid_link(sid: string) string {
+    if sid == "" {
+        return ""
+    }
+    let link: string = gateway_state_get("secure.sid." + sid + ".link")
+    if link != "" {
+        return link
+    }
+    if sid == gateway_state_get("secure.serial.sid") || sid == gateway_state_get("secure.serial.pending") {
+        return "serial"
+    }
+    return ""
+}
+
+// secure_uid_sid is the session frames to a board go under: the one it holds,
+// or — when that one is gone, or reaches no link — the one its latest hello
+// opened. "" when it holds none.
+fn secure_uid_sid(uid: string) string {
+    if uid == "" {
+        return ""
+    }
+    let current: string = gateway_state_get("secure.uid." + uid)
+    let pending: string = gateway_state_get("secure.uid." + uid + ".pending")
+    if secure_live(current) && secure_sid_link(current) != "" {
+        return current
+    }
+    if secure_live(pending) {
+        return pending
+    }
+    if secure_live(current) {
+        return current
+    }
+    return ""
+}
+
+// secure_relayed_payload is a RELAYED payload: the port, the inner frame's id
+// and transaction, and its payload (robohub/protocol, MessageId.RELAYED).
+fn secure_relayed_payload(port: u32, msg_id: u32, tx_id: u32, payload: string) string {
+    return str_from_byte(u8(port)) + robohub_v1_put_u16(u16(msg_id)) + robohub_v1_put_u16(u16(tx_id)) + payload
+}
+
+// secure_send sends a message to the board that holds a session, sealed under
+// it, on the link the session is held to: the serial link, the uplink
+// connection it was opened on, or — for a board behind a relay — inside a
+// RELAYED message sealed under the relay's own session, to the relay's link.
+// It answers whether the frame was written.
+fn secure_send(sid: string, msg_id: u32, tx_id: u32, payload: string) bool {
+    return secure_send_depth(sid, msg_id, tx_id, payload, 0)
+}
+
+fn secure_send_depth(sid: string, msg_id: u32, tx_id: u32, payload: string, depth: u32) bool {
+    let link: string = secure_sid_link(sid)
+    if str_index_of(link, "via:") == 0 {
+        // A relay behind a relay is two hops; more than a few is a loop.
+        if depth >= 4 {
+            return false
+        }
+        let rest: string = str_slice(link, 4, strlen(link) - 4)
+        let colon: i32 = str_index_of(rest, ":")
+        if colon < 0 {
+            return false
+        }
+        let relay_sid: string = secure_uid_sid(str_slice(rest, 0, u32(colon)))
+        let port: u32 = u32(int_from_str(str_slice(rest, u32(colon) + 1, strlen(rest) - u32(colon) - 1)))
+        if relay_sid == "" || relay_sid == sid {
+            return false
+        }
+        let sealed: string = secure_seal_payload(sid, msg_id, tx_id, payload)
+        if sealed == "" {
+            return false
+        }
+        return secure_send_depth(relay_sid, MESSAGE_ID_RELAYED, 0,
+            secure_relayed_payload(port, msg_id + SECURE_FLAG, tx_id, sealed), depth + 1)
+    }
+    return secure_link_write(sid, secure_seal(sid, msg_id, tx_id, payload))
+}
+
+// secure_link_write writes an encoded frame on the link a session is held to.
+fn secure_link_write(sid: string, encoded: string) bool {
+    if encoded == "" {
+        return false
+    }
+    let link: string = secure_sid_link(sid)
+    if link == "serial" {
+        return gateway_serial_write(encoded)
+    }
+    if str_index_of(link, "conn:") == 0 {
+        return gateway_uplink_reply(u32(int_from_str(str_slice(link, 5, strlen(link) - 5))), encoded)
+    }
+    return false
 }

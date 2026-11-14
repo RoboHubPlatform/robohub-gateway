@@ -29,11 +29,11 @@ fn robohub_v1_put_f32(value: f32) string { return robohub_v1_put_u32(f32_to_bits
 fn robohub_v1_get_f32(data: string, off: u32) f32 { return f32_from_bits(robohub_v1_get_u32(data, off)) }
 fn robohub_v1_put_f64(value: f64) string { return robohub_v1_put_u64(f64_to_bits(value)) }
 fn robohub_v1_get_f64(data: string, off: u32) f64 { return f64_from_bits(robohub_v1_get_u64(data, off)) }
-fn robohub_v1_put_string(value: string) string {
+fn robohub_v1_put_string(value: string, width: u32) string {
     var out: string = ""
     var i: u32 = 0
     let length: u32 = strlen(value)
-    while i < 64 {
+    while i < width {
         if i < length {
             out = out + str_from_byte(str_at(value, i))
         } else {
@@ -43,9 +43,19 @@ fn robohub_v1_put_string(value: string) string {
     }
     return out
 }
-fn robohub_v1_get_string(data: string, off: u32) string { return str_slice(data, off, 64) }
+fn robohub_v1_get_string(data: string, off: u32, width: u32) string {
+    var n: u32 = 0
+    while n < width {
+        if str_at(data, off + n) == u8(0) {
+            return str_slice(data, off, n)
+        }
+        n = n + 1
+    }
+    return str_slice(data, off, width)
+}
 
 // MessageId values.
+const MESSAGE_ID_RELAYED: u32 = 19
 const MESSAGE_ID_HELLO: u32 = 257
 const MESSAGE_ID_ANNOUNCE: u32 = 257
 const MESSAGE_ID_TELEMETRY: u32 = 513
@@ -581,7 +591,7 @@ fn sensor_reading_marshal(value: SensorReading) string {
     out = out + device_id_marshal(value.device)
     out = out + robohub_v1_put_u32(value.timestamp_ms)
     out = out + robohub_v1_put_u16(value.status)
-    out = out + robohub_v1_put_string(value.field)
+    out = out + robohub_v1_put_string(value.field, 64)
     out = out + robohub_v1_put_f32(value.value)
     return out
 }
@@ -595,7 +605,7 @@ fn sensor_reading_unmarshal(data: string) SensorReading {
     off = off + 4
     let status: u16 = robohub_v1_get_u16(data, off)
     off = off + 2
-    let field: string = robohub_v1_get_string(data, off)
+    let field: string = robohub_v1_get_string(data, off, 64)
     off = off + 64
     let value: f32 = robohub_v1_get_f32(data, off)
     return SensorReading { device, timestamp_ms, status, field, value }

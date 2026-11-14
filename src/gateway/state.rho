@@ -43,6 +43,8 @@ fn gateway_error(status: u32, message: string) Response {
 // this empties the queue — a request-driven service processes what it did not
 // ask for when it is asked for something.
 fn drain_uplink() u32 {
+    // A manifest that changed is read before anything it may refuse is applied.
+    manifest_refresh(false)
     var applied: u32 = 0
     var guard: u32 = 0
     while guard < 4096 {
@@ -71,23 +73,38 @@ fn apply_uplink_frame(encoded: string, connection: u32) void {
     }
     // The uplink is authenticated as the serial link is: whoever dials in — a
     // board on Wi-Fi or a relay — opens a session first, and every frame after
-    // that is sealed under it. A plain frame is dropped unless the deployment
-    // allows plain frames while it is being reflashed.
+    // that is sealed under the session that connection opened. A plain frame is
+    // always dropped here: ALLOW_PLAIN_FRAMES is for boards being reflashed on
+    // the serial link, and does not open a network listener.
     if received.msg_id == MESSAGE_ID_SECURE_HELLO {
         secure_handle_uplink_hello(received.payload, connection)
         return
     }
-    var frame: TransportFrame = received
-    var source: string = ""
-    if received.msg_id >= SECURE_FLAG {
-        frame = secure_open(received)
-        if !frame.ok {
-            return
-        }
-        source = secure_frame_source(received)
-    } else if !secure_plain_allowed() {
+    if received.msg_id < SECURE_FLAG {
         gateway_state_set_u32("secure.plain_dropped", gateway_state_get_u32("secure.plain_dropped") + 1)
         return
+    }
+    let frame: TransportFrame = secure_open_uplink(received, connection)
+    if !frame.ok {
+        return
+    }
+    let source: string = secure_frame_source(received)
+    let sid: string = secure_frame_sid(received)
+
+    // A board's frame a relay on this connection carried, whole: opened with the
+    // board's own key (gateway/relayed.rho).
+    if frame.msg_id == MESSAGE_ID_RELAYED {
+        relayed_handle(sid, frame.payload)
+        return
+    }
+
+    // A reading is taken only for a place its session may speak for: a board's
+    // own, or a relay's areas (gateway/manifest.rho).
+    if is_reading(frame.msg_id) && !manifest_reading_allowed(sid, frame.payload) {
+        return
+    }
+    if is_reading(frame.msg_id) {
+        manifest_learn_place(sid, frame.payload)
     }
 
     // A sensor reading is never relayed, so on an uplink it is the session
@@ -146,19 +163,32 @@ fn apply_uplink_frame(encoded: string, connection: u32) void {
 
     if frame.msg_id == MESSAGE_ID_ANNOUNCE && announce_valid(frame.payload) {
         let announce: Announce = announce_unmarshal(frame.payload)
+        // Who may say they speak for an area: never anyone for this gateway's
+        // own, and with a node manifest only a relay, for its own areas.
+        let refused: string = manifest_announce_refusal(sid, announce)
+        if refused != "" {
+            gateway_state_set_u32("secure.announce_refused", gateway_state_get_u32("secure.announce_refused") + 1)
+            manifest_say(secure_sid_uid(sid), "announce." + int_to_str(u32(announce.area_id)),
+                "an announce for area " + int_to_str(u32(announce.area_id)) + " was refused: " + refused)
+            return
+        }
         let child: u32 = device_key(u32(announce.gateway.area_id), u32(announce.gateway.link_id))
         // Bind the child to the link it announced itself on, so a command for
         // its area can be sent back down the way the announcement came up.
         gateway_uplink_bind(u32(announce.gateway.area_id), u32(announce.gateway.link_id),
             connection)
         // A command for the child is sealed under the session its connection
-        // opened.
-        gateway_state_set("secure.child." + int_to_str(child) + ".sid",
-            gateway_state_get("secure.conn." + int_to_str(connection) + ".sid"))
+        // opened — the one this announce came up under.
+        gateway_state_set("secure.child." + int_to_str(child) + ".sid", sid)
         gateway_state_set_u32("child." + int_to_str(child), u32(announce.area_id))
         // The area it speaks for, so a device in that area is known to be behind
-        // it rather than on this gateway's own link.
-        gateway_state_set_u32("area." + int_to_str(u32(announce.area_id)), child)
+        // it rather than on this gateway's own link; and the session remembers
+        // it, so the route goes when the session does.
+        let area: string = int_to_str(u32(announce.area_id))
+        gateway_state_set_u32("area." + area, child)
+        if !secure_list_has("," + gateway_state_get("secure.sid." + sid + ".areas"), area) {
+            gateway_state_set("secure.sid." + sid + ".areas", gateway_state_get("secure.sid." + sid + ".areas") + area + ",")
+        }
         gateway_state_set_u32("children", gateway_state_get_u32("children") + 1)
         if u32(announce.mode) == RELAY_ANNOUNCE_MODE {
             gateway_state_set_u32("relay.conn." + int_to_str(connection), 1)
@@ -551,9 +581,25 @@ fn diag_json(diag: DiagResponse) string {
 // answered asynchronously; a device on this gateway's own link is answered in
 // the request. A typed endpoint is a thin wrapper over this.
 fn route_control(area: u32, node: u32, opcode: u16, argument: u32) Response {
+    // A board revoked a moment ago is not sent a command.
+    manifest_refresh(false)
     let tx: u32 = next_tx()
     let device: DeviceId = DeviceId { u16(area), u16(node) }
     let control: ControlRequest = ControlRequest { device, opcode, argument }
+
+    // A board that holds a session of its own — on the serial link, on an uplink
+    // connection, or behind a relay that carries its frames whole — is sent the
+    // command sealed under that session, on the link the session is held to, and
+    // answers in the request.
+    let board_sid: string = manifest_device_sid(area, node)
+    if board_sid != "" {
+        gateway_rpc_register(tx)
+        if !secure_send(board_sid, MESSAGE_ID_CONTROL_REQUEST, tx, control_request_marshal(control)) {
+            return gateway_error(503, "the board's link is unavailable")
+        }
+        return control_answer(tx, opcode)
+    }
+
     let child: u32 = gateway_state_get_u32("area." + int_to_str(area))
     if child != 0 {
         let routed: string = secure_seal(gateway_state_get("secure.child." + int_to_str(child) + ".sid"),
@@ -578,7 +624,12 @@ fn route_control(area: u32, node: u32, opcode: u16, argument: u32) Response {
     if !gateway_serial_write(encoded) {
         return gateway_error(503, "the serial link is unavailable")
     }
+    return control_answer(tx, opcode)
+}
 
+// control_answer waits for the acknowledgement of a command sent with tx and
+// answers the request with it.
+fn control_answer(tx: u32, opcode: u16) Response {
     let response: string = gateway_rpc_wait(tx, 2000)
     if strlen(response) == 0 {
         return gateway_error(504, "the device did not acknowledge in 2000 ms")

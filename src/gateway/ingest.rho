@@ -20,14 +20,29 @@ module gateway.ingest
 // telemetry updates the state and the stream, and a response wakes the handler
 // that is waiting on its tx_id.
 
+// is_reading is whether a message is one of the readings, each of which names
+// the device it is for.
+fn is_reading(msg_id: u32) bool {
+    return msg_id == MESSAGE_ID_TELEMETRY || msg_id == MESSAGE_ID_READING || msg_id == MESSAGE_ID_POWER_READING ||
+        msg_id == MESSAGE_ID_STATE_READING || msg_id == MESSAGE_ID_SENSOR_READING
+}
+
 fn ingest_frame(encoded: string) void {
     let received: TransportFrame = robohub_v1_unframe(encoded)
     if !received.ok {
         return
     }
 
+    // A relay carries up, unchanged, the boards on its link that were planned in
+    // its parent's mesh: their hellos and their sealed frames are the parent's
+    // to open (gateway/relay.rho).
+    if relay_carries(received) {
+        return
+    }
+
     // A board opening a session; a frame sealed under one; or a plain frame,
-    // which is only accepted while a deployment allows it (gateway/secure.rho).
+    // which is only accepted while a deployment allows it (gateway/secure.rho)
+    // — on this link, never on an uplink.
     if received.msg_id == MESSAGE_ID_SECURE_HELLO {
         secure_handle_hello(received.payload)
         return
@@ -36,19 +51,43 @@ fn ingest_frame(encoded: string) void {
     // reading is kept under downstream; an unauthenticated frame has none.
     var frame: TransportFrame = received
     var source: string = ""
+    var sid: string = ""
     if received.msg_id >= SECURE_FLAG {
-        frame = secure_open(received)
+        // Only a session this link holds, or the one a hello on it just
+        // opened: a session opened on an uplink connection is not taken here.
+        frame = secure_open_serial(received)
         if !frame.ok {
             return
         }
         source = secure_frame_source(received)
+        sid = secure_frame_sid(received)
     } else if !secure_plain_allowed() {
         let plain: u32 = gateway_state_get_u32("secure.plain_dropped")
         gateway_state_set_u32("secure.plain_dropped", plain + 1)
         return
+    } else if received.msg_id == MESSAGE_ID_RELAYED {
+        // A relay's envelope says who carried a board's frame, which only a
+        // session can say.
+        gateway_state_set_u32("secure.plain_dropped", gateway_state_get_u32("secure.plain_dropped") + 1)
+        return
     } else if gateway_state_get("secure.plain_warned") == "" {
         gateway_state_set("secure.plain_warned", "1")
         secure_log("accepting unauthenticated frames because ALLOW_PLAIN_FRAMES=1")
+    }
+    ingest_opened(frame, source, sid)
+}
+
+// ingest_opened acts on a frame that came in under a board's session — on the
+// serial link, posted over HTTP, or carried by a relay — or plain, where plain
+// frames are allowed: source is the board it is from and sid its session, both
+// "" for a plain frame.
+fn ingest_opened(frame: TransportFrame, source: string, sid: string) void {
+    // A board's frame a relay carried: it is opened with the board's own key.
+    if frame.msg_id == MESSAGE_ID_RELAYED {
+        if sid != "" {
+            relayed_handle(sid, frame.payload)
+        }
+        return
     }
 
     // tx_id 0 is unsolicited, so it is telemetry and no one is waiting for it.
@@ -56,6 +95,13 @@ fn ingest_frame(encoded: string) void {
     // measurements and both name their device, so the level and the message are
     // what tell them apart and neither is told which link it arrived on.
     if frame.tx_id == 0 {
+        // A board speaks for its own place only, as the node manifest has it.
+        if is_reading(frame.msg_id) {
+            if !manifest_reading_allowed(sid, frame.payload) {
+                return
+            }
+            manifest_learn_place(sid, frame.payload)
+        }
         // A relay carries what it hears up to its parent as well.
         relay_forward(frame.msg_id, frame.payload)
         if frame.msg_id == MESSAGE_ID_TELEMETRY {

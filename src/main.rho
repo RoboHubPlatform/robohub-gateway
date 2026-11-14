@@ -32,6 +32,7 @@ include "gateway/port.rho"
 include "gateway/security.rho"
 include "gateway/wire/protocol.rho"
 include "gateway/secure.rho"
+include "gateway/manifest.rho"
 include "gateway/ingest.rho"
 include "gateway/stream.rho"
 include "gateway/history.rho"
@@ -39,6 +40,7 @@ include "gateway/devices.rho"
 include "gateway/outbox.rho"
 include "gateway/state.rho"
 include "gateway/relay.rho"
+include "gateway/relayed.rho"
 
 import std.web.http
 
@@ -68,12 +70,18 @@ route POST "/api/v1/uplink/pump" => uplink_pump
 // A liveness probe is registered by the router port for every service, so this
 // module does not declare one; GET /healthz answers {"status":"ok"} already.
 
-// init runs on every target before the service starts. Bringing the link up
-// here means the first request already has a reader behind it.
 // ingest_http_frame accepts an encoded frame from a network bridge. A Shelly
-// or another IP device reaches the gateway through a relay or a small poller;
-// the frame it posts is the same frame a serial link carries, so the reader,
-// the state and the stream are the same.
+// or another IP device reaches the gateway through a small poller; the frame it
+// posts is the same frame a board sends, so the state and the stream are the
+// same. The bridge's token (scope `command`) says who may post; the frame says
+// which board it is from, and is held to the rules a network link is:
+//
+// - a hello opens a session for the board and is answered in the response, as
+//   `{"success":true,"session":"<encoded SESSION frame, as hex>"}` — never on
+//   the serial link, which is not where it came from;
+// - a frame sealed under a session opened here is taken as the board's;
+// - a plain frame, or one sealed under a session of another link, is refused:
+//   ALLOW_PLAIN_FRAMES is the serial link's alone.
 fn ingest_http_frame(req: Request) Response {
     if !gateway_allowed(req, "command") {
         return gateway_denied()
@@ -82,10 +90,42 @@ fn ingest_http_frame(req: Request) Response {
     if strlen(body) == 0 {
         return json(400, "{\"success\":false}")
     }
-    ingest_frame(body)
+    let received: TransportFrame = robohub_v1_unframe(body)
+    if !received.ok {
+        return gateway_error(400, "not a frame")
+    }
+    manifest_refresh(false)
+    if received.msg_id == MESSAGE_ID_SECURE_HELLO {
+        let accepted: string = secure_accept_hello(received.payload)
+        if accepted == "" {
+            return gateway_error(403, "the hello was not answered")
+        }
+        let sid: string = str_slice(accepted, 0, 4)
+        gateway_state_set("secure.sid." + sid + ".link", "http")
+        secure_store()
+        return json(200, "{\"success\":true,\"session\":\"" +
+            secure_hex(str_slice(accepted, 5, strlen(accepted) - 5)) + "\"}")
+    }
+    if received.msg_id < SECURE_FLAG {
+        gateway_state_set_u32("secure.plain_dropped", gateway_state_get_u32("secure.plain_dropped") + 1)
+        return gateway_error(403, "a plain frame is not accepted here")
+    }
+    let sid: string = secure_frame_sid(received)
+    if gateway_state_get("secure.sid." + sid + ".link") != "http" {
+        let count: u32 = gateway_state_get_u32("secure.refused")
+        gateway_state_set_u32("secure.refused", count + 1)
+        return gateway_error(403, "the frame's session was not opened here")
+    }
+    let frame: TransportFrame = secure_open(received, sid, sid)
+    if !frame.ok || frame.msg_id == MESSAGE_ID_RELAYED {
+        return gateway_error(403, "the frame did not open")
+    }
+    ingest_opened(frame, secure_sid_uid(sid), sid)
     return json(200, "{\"success\":true}")
 }
 
+// init runs on every target before the service starts. Bringing the link up
+// here means the first request already has a reader behind it.
 fn init() void {
     // REST_PORT is the gateway's name for the listener; let it stand in for the
     // generated service's RHO_HTTP_ADDR before the address is chosen.
@@ -94,6 +134,9 @@ fn init() void {
     if secure_restore() > 0 {
         print("robohub-gateway: boards that held a session are heard again\n")
     }
+    // The node manifest Mesh wrote beside the key: which boards are let in, and
+    // the sessions of any it revoked while this gateway was down are dropped.
+    manifest_refresh(true)
     print("robohub-gateway: starting as " + gateway_mode() +
         " in area " + int_to_str(gateway_area()) + "\n")
     // The uplink is where a relay dials in. A gateway with nothing above it —
@@ -138,5 +181,8 @@ fn background() void {
         }
         drain_uplink()
         relay_tick()
+        // A board revoked in the manifest loses its sessions within seconds,
+        // whether or not it is sending.
+        manifest_refresh(false)
     }
 }

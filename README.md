@@ -114,22 +114,27 @@ timer, onewire, uart and net the board has — the probes a Pico node passes.
 
 A gateway can report through a parent (`GATEWAY_MODE=relay`, `PARENT_UPLINK`)
 and can listen for the gateways and Wi-Fi boards below it (`UPLINK_PORT`,
-confined to one interface with `UPLINK_BIND`). Both, and how a command is routed
+confined to one interface with `UPLINK_BIND`, bounded by `UPLINK_MAX_CONNECTIONS`
+and `UPLINK_IDLE_TIMEOUT_S`). Both, and how a command is routed
 down by area, are in [docs/index.md](docs/index.md#relay-mode).
 
 ### The whole tree on one machine
 
-`tools/relay-smoke.py` runs a master, a relay (`relay-host`, on `robohub-linux`)
-and a board (a pseudo-terminal) together, and checks both directions: a reading
-up from the board to the master, and a command down from the master to the board
-and the answer back.
+`tools/relay-smoke.py` runs a master, the C relay (`relay-host`, on
+`robohub-linux`) and sealed boards (a pseudo-terminal) together. The relay holds
+no board's key: it carries each board's hello and sealed frames whole in
+`RELAYED`, and the master opens them with the board's own key. It checks a
+reading up as the board's, a command down and the answer back, that a relay
+cannot forge a reading, that a plain command on the relay's USB port reaches no
+board, a gateway in relay mode carrying a board its parent planned, and the
+master restarting.
 
 ```sh
 python3 tools/relay-smoke.py
 ```
 
-It needs the relay built for the host first — see
-`robohub-drivers/examples/gateway/c/relay-host`.
+It builds `robohub-drivers/examples/gateway/c/relay-host` natively when it is not
+built, and says SKIP where it cannot; it runs in `rho test .`.
 
 ### `POST /api/v1/telemetry/sampling-rate`
 
@@ -392,14 +397,30 @@ board's key from it and the board's id, so no board key is stored or sent. A boa
 says hello, the gateway answers with a session bound to the board's nonce, and
 every frame after that carries a counter and a tag: a frame that is forged,
 changed, replayed or from an expired session is dropped. A plain frame is dropped
-too, unless `ALLOW_PLAIN_FRAMES=1` while boards are being reflashed. A command is
-sent to a board sealed under its session, or not at all.
+too, unless `ALLOW_PLAIN_FRAMES=1` while boards are being reflashed — on the
+serial link only. A command is sent to a board sealed under its session, or not
+at all.
+
+Which boards may open a session is the node manifest's to say: `nodes.txt`, which
+Mesh writes beside the key, lists each board's id, placement, role and whether it
+is revoked. A board that is not listed or is revoked is not answered and loses the
+sessions it holds; a board's readings are taken for its own area and node only; a
+relay announces and carries readings only for its own areas, and no one announces
+the gateway's own area. Sessions are bound to the link they were opened on, a
+recorded hello is not answered again, and counters are kept so that no frame
+recorded before a restart opens after it. See
+[docs/index.md](docs/index.md#the-node-manifest).
 
 The uplink is authenticated the same way. Whoever dials in — a board on Wi-Fi, or
 a relay below this gateway — says hello on its connection and is answered on it,
 and every frame after that is sealed under its session; a command routed down to
 a relay is sealed under the session its connection opened. A plain frame on the
-uplink is dropped like one on the serial link. A sensor reading that comes up the
+uplink is always dropped, whatever `ALLOW_PLAIN_FRAMES` says. A board behind a
+relay that holds no key of its own — the C relay — is authenticated with its own
+key: the relay carries its frames whole in `RELAYED`, and commands for it go down
+the same way, routed per board session ([docs/index.md](docs/index.md#boards-behind-a-relay-relayed)).
+`POST /api/v1/frames` takes only a board's sealed frames under a session opened
+there (its hello is answered in the response), never a plain frame. A sensor reading that comes up the
 uplink is the connected board's own and is kept under its id; what a relay
 carries up is placed by area and node. The uplink is drained by the gateway's own
 loop, so a session is answered while the other end waits for it.

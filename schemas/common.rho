@@ -33,7 +33,22 @@ namespace robohub.v1
 
 // The transport header's msg_id. The values are decimal because a schema enum
 // takes a decimal literal; the hex each one stands for is in the comment.
+//
+// RELAYED is a board's frame carried, unchanged, by a relay that holds no key of
+// the board's: sealed under the relay's own session to its parent, it says which
+// of the relay's ports the board hangs from and holds the board's frame whole —
+// its HELLO (0x0011), or a frame sealed under the board's own session — so the
+// parent authenticates the board itself and the relay can only drop or delay.
+// The parent answers the same way: the board's SESSION (0x0012) and the frames
+// it seals for the board go down inside RELAYED, and the relay writes the inner
+// frame to the port. Its payload runs to the end of the frame, which a schema
+// message cannot say, so it is written out here rather than declared:
+//
+//     port(u8) | inner_msg_id(u16) | inner_tx_id(u16) | inner_payload
+//
+// with the two ids little-endian, as the transport header has them.
 enum MessageId {
+    RELAYED = 19                    // 0x0013, both levels: a board's frame carried by a relay
     HELLO = 257                     // 0x0101, L2: a board announces itself
     ANNOUNCE = 257                  // 0x0101, L1: a gateway announces itself
     TELEMETRY = 513                 // 0x0201, L2: a board's reading

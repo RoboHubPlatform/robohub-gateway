@@ -1,0 +1,106 @@
+//
+// @file relayed.rho
+// @brief Boards behind a relay: their frames carried whole in RELAYED, opened with their own keys.
+//
+// @module gateway.relayed
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-11-14
+//
+// SPDX-License-Identifier: MIT
+//
+
+module gateway.relayed
+
+// Boards behind a relay.
+//
+// A relay — the C relay, or a gateway in relay mode for the boards its parent
+// planned — holds no key of a board's. It carries what a board sends, its hello
+// and the frames it seals under its own session, unchanged inside a RELAYED
+// message sealed under the relay's own session (robohub/protocol, MessageId):
+//
+//   port(u8) | inner_msg_id(u16) | inner_tx_id(u16) | inner_payload
+//
+// This gateway opens the outer frame with the relay's session, and the inner one
+// with the board's: the hello is answered with the board's own key — the board
+// must be in the node manifest, in an area the relay may speak for — and the
+// session it opens is held to that relay and port. A reading is the board's,
+// kept under its id, and taken only for the board's own place and an area the
+// relay may speak for. A relay can drop or delay a board's frame; it cannot
+// forge one, change one, or move one to another board's session.
+//
+// What goes down to such a board — its SESSION, and everything sealed for it —
+// goes inside RELAYED to the relay's link, sealed under the relay's session
+// (secure_send in gateway/secure.rho).
+
+// relayed_handle acts on a RELAYED payload that came in under the session
+// relay_sid.
+fn relayed_handle(relay_sid: string, payload: string) void {
+    if strlen(payload) < 5 {
+        return
+    }
+    let relay_uid: string = secure_sid_uid(relay_sid)
+    let refused: string = manifest_relay_refusal(relay_uid)
+    if refused != "" {
+        gateway_state_set_u32("secure.relayed_refused", gateway_state_get_u32("secure.relayed_refused") + 1)
+        manifest_say(relay_uid, "relayed", "a frame relayed by " + relay_uid + " was refused: " + refused)
+        return
+    }
+    let port: u32 = u32(str_at(payload, 0))
+    var inner: TransportFrame
+    inner.ok = true
+    inner.msg_id = u32(robohub_v1_get_u16(payload, 1))
+    inner.tx_id = u32(robohub_v1_get_u16(payload, 3))
+    inner.payload = str_slice(payload, 5, strlen(payload) - 5)
+
+    if inner.msg_id == MESSAGE_ID_SECURE_HELLO {
+        relayed_hello(relay_sid, relay_uid, port, inner.payload)
+        return
+    }
+    // A plain frame carried by a relay is nobody's: the relay cannot vouch for
+    // a board, and the board did not seal it.
+    if inner.msg_id < SECURE_FLAG {
+        gateway_state_set_u32("secure.plain_dropped", gateway_state_get_u32("secure.plain_dropped") + 1)
+        return
+    }
+    // The board's session must be one opened through this relay, on this port.
+    let sid: string = secure_frame_sid(inner)
+    if gateway_state_get("secure.sid." + sid + ".link") != "via:" + relay_uid + ":" + int_to_str(port) {
+        let count: u32 = gateway_state_get_u32("secure.refused")
+        gateway_state_set_u32("secure.refused", count + 1)
+        return
+    }
+    let opened: TransportFrame = secure_open(inner, sid, sid)
+    if !opened.ok {
+        return
+    }
+    if opened.tx_id == 0 && is_reading(opened.msg_id) && !manifest_relayed_reading_allowed(relay_sid, sid, opened.payload) {
+        return
+    }
+    ingest_opened(opened, secure_sid_uid(sid), sid)
+}
+
+// relayed_hello answers a board's hello carried by a relay, through that relay.
+fn relayed_hello(relay_sid: string, relay_uid: string, port: u32, hello: string) void {
+    if strlen(hello) != 24 {
+        return
+    }
+    let uid: string = secure_hex(str_slice(hello, 0, 8))
+    manifest_refresh(false)
+    let refused: string = manifest_relayed_hello_refusal(relay_uid, uid)
+    if refused != "" {
+        manifest_say(uid, "hello", "a hello from board " + uid + " through relay " + relay_uid + " was refused: " + refused)
+        return
+    }
+    let accepted: string = secure_accept_hello_answer(hello)
+    if accepted == "" {
+        return
+    }
+    let sid: string = str_slice(accepted, 0, 4)
+    gateway_state_set("secure.sid." + sid + ".link", "via:" + relay_uid + ":" + int_to_str(port))
+    secure_store()
+    let answer: string = str_slice(accepted, 5, strlen(accepted) - 5)
+    if !secure_send(relay_sid, MESSAGE_ID_RELAYED, 0, secure_relayed_payload(port, MESSAGE_ID_SECURE_SESSION, 0, answer)) {
+        secure_log("session " + sid + " could not be sent through relay " + relay_uid)
+    }
+}

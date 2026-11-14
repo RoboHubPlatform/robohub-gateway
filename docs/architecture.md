@@ -121,11 +121,13 @@ A board in the field has no debugger, so both levels answer:
   and gateways seen, frames in and out, drops, and the platform's network
   status.
 
-A network device does not have to speak the serial framing itself: a relay or
-a small poller can post an encoded frame to `POST /api/v1/frames`, and the
-gateway reads it exactly as it reads one from a serial link. That is how a
-Shelly over HTTP RPC or MQTT, or any other IP device, becomes a device record
-without a new ingest path.
+A network device does not have to speak the serial framing itself: a small
+poller can post an encoded frame to `POST /api/v1/frames`, and the gateway reads
+it through the same ingest path as a board's. That is how a Shelly over HTTP RPC
+or MQTT, or any other IP device, becomes a device record. The frames are a
+board's own: its hello is answered in the response (never on the serial link),
+and only frames sealed under a session opened there are taken — a plain one is
+refused, as on the uplink.
 
 The master exposes its own diagnostics as `GET /api/v1/diagnostics`, and a
 device's last smoke as part of its node record, so "it stopped" becomes "the

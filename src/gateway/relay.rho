@@ -22,11 +22,22 @@ module gateway.relay
 // it. Once the session is open the relay announces the area it speaks for, which
 // is what the parent routes commands for that area down by.
 //
-// What the relay hears from its own boards it carries up, sealed under its
-// session: readings, power and state readings, sensor readings, each naming
-// its area and node. A command the parent routes down is passed on to the board
-// it names, under the relay's own session with that board, and the board's
-// answer goes back up with the parent's transaction id.
+// What the relay hears from its own boards — the ones its own gateway key keys —
+// it carries up hop by hop, sealed under its session: readings, power and state
+// readings, sensor readings, each naming its area and node, which the parent
+// takes only for the areas the manifest gives this relay. A command the parent
+// routes down is passed on to the board it names, under the relay's own session
+// with that board, and the board's answer goes back up with the parent's
+// transaction id.
+//
+// A board on this gateway's link that its parent planned — keyed from the
+// parent's gateway key, and so not one this gateway can open — is carried
+// whole instead, as the C relay carries its boards: its hello, and every frame
+// sealed under the session the parent gives it, go up unchanged inside RELAYED
+// (port 0, the serial link), and what the parent sends it comes back inside
+// RELAYED and is written to the link as it came. Such a board is one this
+// gateway's node manifest does not list — or, with no manifest, one whose hello
+// does not authenticate under this gateway's key.
 
 extern fn gateway_parent_start(address: string) bool
 extern fn gateway_parent_connected() u32
@@ -113,7 +124,7 @@ fn relay_accept_session(payload: string) bool {
     if uid != relay_uid() || nonce_b == "" {
         return false
     }
-    if secure_tag(key, SECURE_LABEL_SESSION + uid + nonce_b + sid + nonce_g + lifetime_hex) != tag {
+    if !secure_equal(secure_tag(key, SECURE_LABEL_SESSION + uid + nonce_b + sid + nonce_g + lifetime_hex), tag) {
         secure_log("relay: the parent's session did not authenticate")
         return false
     }
@@ -166,7 +177,7 @@ fn relay_open(frame: TransportFrame) TransportFrame {
     let header: string = secure_hex(robohub_v1_put_u16(u16(frame.msg_id)) + robohub_v1_put_u16(u16(frame.tx_id)))
     let expected: string = secure_tag(gateway_state_get("relay.k_down"),
         header + secure_hex(str_slice(payload, 0, 6)) + secure_hex(inner))
-    if expected != secure_hex(str_slice(payload, 6 + body_length, 8)) {
+    if !secure_equal(expected, secure_hex(str_slice(payload, 6 + body_length, 8))) {
         return refused
     }
     gateway_state_set_u32("relay.down", counter)
@@ -246,6 +257,79 @@ fn relay_down(frame: TransportFrame) void {
     }
 }
 
+// The port RELAYED names for this gateway's serial link.
+const RELAY_SERIAL_PORT: u32 = 0
+
+// relay_foreign_hello is whether a hello on the serial link is a board the
+// parent planned: one this gateway does not key.
+fn relay_foreign_hello(payload: string) bool {
+    if strlen(payload) != 24 {
+        return false
+    }
+    let uid: string = secure_hex(str_slice(payload, 0, 8))
+    manifest_refresh(false)
+    if manifest_present() {
+        return gateway_state_get("manifest.node." + uid) == ""
+    }
+    if secure_gateway_key() == "" {
+        return true
+    }
+    let tag: string = secure_hex(str_slice(payload, 16, 8))
+    return !secure_equal(secure_tag(secure_device_key(uid), SECURE_LABEL_HELLO + uid + secure_hex(str_slice(payload, 8, 8))), tag)
+}
+
+// relay_carries carries a frame from the serial link up whole when it is a
+// parent-planned board's — its hello, or a frame sealed under the session the
+// parent gave it — and answers whether it did.
+fn relay_carries(frame: TransportFrame) bool {
+    if !relay_enabled() {
+        return false
+    }
+    if frame.msg_id == MESSAGE_ID_SECURE_HELLO {
+        if !relay_foreign_hello(frame.payload) {
+            return false
+        }
+    } else if frame.msg_id >= SECURE_FLAG {
+        if gateway_state_get("relay.carried." + secure_frame_sid(frame)) != "1" {
+            return false
+        }
+    } else {
+        return false
+    }
+    if !relay_send(MESSAGE_ID_RELAYED, 0, secure_relayed_payload(RELAY_SERIAL_PORT, frame.msg_id, frame.tx_id, frame.payload)) {
+        secure_log("relay: a board's frame for the parent could not be carried up")
+    }
+    return true
+}
+
+// relay_carried_down writes to the serial link a frame the parent sent a board
+// it planned. A SESSION names the session id, whose frames are carried from
+// then on.
+fn relay_carried_down(payload: string) void {
+    if strlen(payload) < 5 || u32(str_at(payload, 0)) != RELAY_SERIAL_PORT {
+        return
+    }
+    let msg_id: u32 = u32(robohub_v1_get_u16(payload, 1))
+    let tx_id: u32 = u32(robohub_v1_get_u16(payload, 3))
+    let inner: string = str_slice(payload, 5, strlen(payload) - 5)
+    if msg_id == MESSAGE_ID_SECURE_SESSION {
+        if strlen(inner) != 28 {
+            return
+        }
+        let sid: string = secure_hex(str_slice(inner, 8, 2))
+        if secure_live(sid) {
+            secure_log("relay: the parent gave a board session " + sid + ", which a board of this gateway holds too")
+        }
+        gateway_state_set("relay.carried." + sid, "1")
+    } else if msg_id < SECURE_FLAG {
+        // Only a board's session and what is sealed for it are written down.
+        return
+    }
+    if !gateway_serial_write(robohub_v1_frame(msg_id, tx_id, inner)) {
+        secure_log("relay: a frame from the parent could not be written to the link")
+    }
+}
+
 fn relay_apply(encoded: string) void {
     let received: TransportFrame = robohub_v1_unframe(encoded)
     if !received.ok {
@@ -259,7 +343,9 @@ fn relay_apply(encoded: string) void {
     }
     if received.msg_id >= SECURE_FLAG {
         let opened: TransportFrame = relay_open(received)
-        if opened.ok {
+        if opened.ok && opened.msg_id == MESSAGE_ID_RELAYED {
+            relay_carried_down(opened.payload)
+        } else if opened.ok {
             relay_down(opened)
         }
     }

@@ -7,3 +7,18 @@ suites:
     kind: command
     tags: [smoke]
     command: [python3, tools/smoke.py]
+  # The trust rules: the node manifest, announces, sessions bound to their link,
+  # replayed hellos, and counters across a restart.
+  - name: gateway-security
+    kind: command
+    tags: [smoke, security]
+    command: [python3, tools/security-smoke.py]
+  # The C relay end to end: boards sealed behind it, their frames carried whole
+  # in RELAYED and opened with their own keys; the downlink through it; a relay
+  # that forges; the USB port; a gateway in relay mode; the master restarting.
+  # It builds robohub-drivers' relay-host natively, and says SKIP (and passes)
+  # where that checkout or a C toolchain is missing.
+  - name: gateway-relay
+    kind: command
+    tags: [smoke, security, relay]
+    command: [python3, tools/relay-smoke.py]

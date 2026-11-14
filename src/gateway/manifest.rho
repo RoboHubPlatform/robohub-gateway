@@ -1,0 +1,536 @@
+//
+// @file manifest.rho
+// @brief The node manifest: which boards may open a session, where each is placed, and which are revoked.
+//
+// @module gateway.manifest
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-11-14
+//
+// SPDX-License-Identifier: MIT
+//
+
+module gateway.manifest
+
+// The node manifest Mesh writes beside the gateway's key.
+//
+// A board's key derives from the gateway's key and the board's id, so the key
+// alone says that a board was keyed for this gateway, not that it still belongs
+// to it nor where it sits. Mesh writes `nodes.txt` beside `gateway.key` at every
+// deploy and whenever a board is added, moved, revoked or re-keyed, one line per
+// node and `#` for a comment:
+//
+//   <uid>|<area>|<node>|<role>|<epoch>|<revoked>|<areas>
+//
+// uid is the board's 16 hex digits, area and node its placement, role `board`
+// or `relay`, epoch the key epoch (not read yet), revoked `0` or `1`, and areas,
+// for a relay, the comma-separated areas it may speak for.
+//
+// With a manifest, a board that is not in it or is revoked is not answered when
+// it says hello and loses the sessions it holds; a board's readings are taken
+// only for its own area and node; a relay announces and carries readings only
+// for its own areas. Without one — a gateway deployed before Mesh wrote it — any
+// board whose key derives is answered, which is said once at start; the rules
+// that need no manifest (never an announce for this gateway's own area, a
+// session held to its connection) apply all the same.
+//
+// The file is read at start and read again, when it has changed, at most every
+// MANIFEST_CHECK_MS. A manifest that disappears after one was read leaves the
+// last one in force: removing a file must not let a revoked board back in.
+
+// How often the file is looked at again, and how often one board's refusal of
+// one kind is said.
+const MANIFEST_CHECK_MS: u32 = 5000
+const MANIFEST_SAY_EVERY_S: u32 = 3600
+
+// manifest_path is `nodes.txt` beside the gateway's key, or "" when the gateway
+// has no key file.
+fn manifest_path() string {
+    let dir: string = secure_key_dir()
+    if dir == "" {
+        return ""
+    }
+    if dir == "/" {
+        return "/nodes.txt"
+    }
+    return dir + "/nodes.txt"
+}
+
+fn manifest_present() bool {
+    return gateway_state_get("manifest.present") == "1"
+}
+
+// manifest_lower is hex in lower case, as the gateway writes a uid.
+fn manifest_lower(text: string) string {
+    var out: string = ""
+    var i: u32 = 0
+    while i < strlen(text) {
+        let c: u8 = str_at(text, i)
+        if c >= u8(65) && c <= u8(90) {
+            out = out + str_from_byte(c + u8(32))
+        } else {
+            out = out + str_from_byte(c)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// manifest_trim drops the spaces, tabs and carriage returns around a field.
+fn manifest_trim(text: string) string {
+    var start: u32 = 0
+    var end: u32 = strlen(text)
+    while start < end && (str_at(text, start) == u8(32) || str_at(text, start) == u8(9) || str_at(text, start) == u8(13)) {
+        start = start + 1
+    }
+    while end > start && (str_at(text, end - 1) == u8(32) || str_at(text, end - 1) == u8(9) || str_at(text, end - 1) == u8(13)) {
+        end = end - 1
+    }
+    return str_slice(text, start, end - start)
+}
+
+fn manifest_is_hex(text: string) bool {
+    var i: u32 = 0
+    while i < strlen(text) {
+        if str_index_of("0123456789abcdef", str_slice(text, i, 1)) < 0 {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+fn manifest_is_decimal(text: string) bool {
+    if text == "" {
+        return false
+    }
+    var i: u32 = 0
+    while i < strlen(text) {
+        if str_at(text, i) < u8(48) || str_at(text, i) > u8(57) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// manifest_areas is a relay's areas as a list `,a,b,` (each as a decimal with
+// no leading zeros), or "" when there are none or one is not a number.
+fn manifest_areas(text: string) string {
+    var out: string = ","
+    var rest: string = text
+    while rest != "" {
+        let at: i32 = str_index_of(rest, ",")
+        var item: string = rest
+        if at < 0 {
+            rest = ""
+        } else {
+            item = str_slice(rest, 0, u32(at))
+            rest = str_slice(rest, u32(at) + 1, strlen(rest) - u32(at) - 1)
+        }
+        let area: string = manifest_trim(item)
+        if area == "" {
+            continue
+        }
+        if !manifest_is_decimal(area) {
+            return ""
+        }
+        out = out + int_to_str(int_from_str(area)) + ","
+    }
+    if out == "," {
+        return ""
+    }
+    return out
+}
+
+// manifest_load replaces the nodes known with the ones a manifest's text lists,
+// as `area|node|role|revoked|areas` under each uid. A line that does not parse
+// is skipped and counted, never half-read.
+fn manifest_load(path: string, text: string) void {
+    var old: string = gateway_state_get("manifest.uids")
+    while old != "" {
+        let at: i32 = str_index_of(old, ",")
+        let uid: string = str_slice(old, 0, u32(at))
+        old = str_slice(old, u32(at) + 1, strlen(old) - u32(at) - 1)
+        let was: string = gateway_state_get("manifest.node." + uid)
+        if was != "" && gateway_state_get("manifest.place." + secure_field(was, 0) + "." + secure_field(was, 1)) == uid {
+            gateway_state_set("manifest.place." + secure_field(was, 0) + "." + secure_field(was, 1), "")
+        }
+        gateway_state_set("manifest.node." + uid, "")
+    }
+    var uids: string = ""
+    var nodes: u32 = 0
+    var revoked: u32 = 0
+    var skipped: u32 = 0
+    var rest: string = text
+    while rest != "" {
+        let at: i32 = str_index_of(rest, "\n")
+        var line: string = rest
+        if at < 0 {
+            rest = ""
+        } else {
+            line = str_slice(rest, 0, u32(at))
+            rest = str_slice(rest, u32(at) + 1, strlen(rest) - u32(at) - 1)
+        }
+        line = manifest_trim(line)
+        if line == "" || str_slice(line, 0, 1) == "#" {
+            continue
+        }
+        let uid: string = manifest_lower(manifest_trim(secure_field(line, 0)))
+        let area: string = manifest_trim(secure_field(line, 1))
+        let node: string = manifest_trim(secure_field(line, 2))
+        let role: string = manifest_trim(secure_field(line, 3))
+        let gone: string = manifest_trim(secure_field(line, 5))
+        let areas: string = manifest_trim(secure_field(line, 6))
+        if strlen(uid) != 16 || !manifest_is_hex(uid) || !manifest_is_decimal(area) || !manifest_is_decimal(node) ||
+            (role != "board" && role != "relay") || (gone != "0" && gone != "1") {
+            skipped = skipped + 1
+            continue
+        }
+        var spoken: string = ""
+        if role == "relay" {
+            spoken = manifest_areas(areas)
+        }
+        if gateway_state_get("manifest.node." + uid) == "" {
+            uids = uids + uid + ","
+            nodes = nodes + 1
+            if gone == "1" {
+                revoked = revoked + 1
+            }
+        }
+        gateway_state_set("manifest.node." + uid, int_to_str(int_from_str(area)) + "|" + int_to_str(int_from_str(node)) +
+            "|" + role + "|" + gone + "|" + spoken)
+        // Which board a command for a place goes to.
+        gateway_state_set("manifest.place." + int_to_str(int_from_str(area)) + "." + int_to_str(int_from_str(node)), uid)
+    }
+    gateway_state_set("manifest.uids", uids)
+    gateway_state_set("manifest.present", "1")
+    var said: string = "node manifest " + path + ": " + int_to_str(nodes) + " nodes, " + int_to_str(revoked) + " revoked"
+    if skipped > 0 {
+        said = said + ", " + int_to_str(skipped) + " lines that did not parse skipped"
+    }
+    secure_log(said)
+}
+
+// manifest_refresh reads the manifest when it has changed, at most every
+// MANIFEST_CHECK_MS unless forced, and takes away from the boards it no longer
+// accepts the sessions and routes they held.
+fn manifest_refresh(force: bool) void {
+    let now: u32 = gateway_now_ms()
+    if !force && gateway_state_get("manifest.checked") == "1" &&
+        now - gateway_state_get_u32("manifest.checked_at") < MANIFEST_CHECK_MS {
+        return
+    }
+    gateway_state_set("manifest.checked", "1")
+    gateway_state_set_u32("manifest.checked_at", now)
+    let path: string = manifest_path()
+    if path == "" {
+        return
+    }
+    let text: string = rho_read_text(path)
+    if text == "" {
+        if manifest_present() {
+            if gateway_state_get("manifest.gone_warned") == "" {
+                gateway_state_set("manifest.gone_warned", "1")
+                secure_log("the node manifest " + path + " is gone or empty; the last one read stays in force")
+            }
+        } else if gateway_state_get("manifest.missing_warned") == "" {
+            gateway_state_set("manifest.missing_warned", "1")
+            secure_log("no node manifest (" + path + "): any board with a derivable key is accepted")
+        }
+        return
+    }
+    gateway_state_set("manifest.gone_warned", "")
+    if text == gateway_state_get("manifest.text") {
+        return
+    }
+    gateway_state_set("manifest.text", text)
+    manifest_load(path, text)
+    manifest_enforce()
+}
+
+// manifest_enforce drops every live session whose board the manifest no longer
+// accepts, and every route a relay announced for an area it may no longer speak
+// for.
+fn manifest_enforce() void {
+    var dropped: u32 = 0
+    var rest: string = gateway_state_get("secure.sids")
+    while rest != "" {
+        let at: i32 = str_index_of(rest, ",")
+        var sid: string = rest
+        if at < 0 {
+            rest = ""
+        } else {
+            sid = str_slice(rest, 0, u32(at))
+            rest = str_slice(rest, u32(at) + 1, strlen(rest) - u32(at) - 1)
+        }
+        if !secure_live(sid) {
+            continue
+        }
+        let uid: string = secure_sid_uid(sid)
+        let refused: string = manifest_refusal(uid)
+        if refused != "" {
+            secure_drop_session(sid)
+            secure_log("session " + sid + " of board " + uid + " dropped: " + refused)
+            dropped = dropped + 1
+            continue
+        }
+        let record: string = gateway_state_get("manifest.node." + uid)
+        var areas: string = gateway_state_get("secure.sid." + sid + ".areas")
+        var kept: string = ""
+        while areas != "" {
+            let comma: i32 = str_index_of(areas, ",")
+            let area: string = str_slice(areas, 0, u32(comma))
+            areas = str_slice(areas, u32(comma) + 1, strlen(areas) - u32(comma) - 1)
+            if area == "" {
+                continue
+            }
+            if secure_field(record, 2) != "relay" || !secure_list_has(secure_field(record, 4), area) {
+                secure_unroute(sid, area)
+                secure_log("area " + area + " is no longer routed to board " + uid + ": the manifest does not give it")
+            } else {
+                kept = kept + area + ","
+            }
+        }
+        gateway_state_set("secure.sid." + sid + ".areas", kept)
+    }
+    if dropped > 0 {
+        secure_store()
+    }
+}
+
+// manifest_refusal is why the manifest does not accept a board — not listed, or
+// revoked — or "" when it does, or when there is no manifest.
+fn manifest_refusal(uid: string) string {
+    if !manifest_present() {
+        return ""
+    }
+    let record: string = gateway_state_get("manifest.node." + uid)
+    if record == "" {
+        return "it is not in the node manifest"
+    }
+    if secure_field(record, 3) == "1" {
+        return "it is revoked"
+    }
+    return ""
+}
+
+// manifest_say logs one board's refusal of one kind at most once an hour. The
+// boards it is said for hold a key that derives, so the set stays small.
+fn manifest_say(uid: string, kind: string, message: string) void {
+    let key: string = "manifest.said." + kind + "." + uid
+    let now: u32 = secure_now_s()
+    let last: u32 = gateway_state_get_u32(key)
+    if last != 0 && now - last < MANIFEST_SAY_EVERY_S {
+        return
+    }
+    gateway_state_set_u32(key, now)
+    secure_log(message)
+}
+
+// manifest_reading_refusal is why a reading for area/node, carried by session
+// sid, is not taken, or "" when it is. A board speaks only for its own place; a
+// relay for its own place and the areas the manifest gives it. Without a
+// manifest a session that announced areas speaks only for those, and any other
+// as before. A frame with no session (a plain frame, which only the serial link
+// takes and only while plain frames are allowed) is not judged here.
+fn manifest_reading_refusal(sid: string, area: u32, node: u32) string {
+    if sid == "" {
+        return ""
+    }
+    let uid: string = secure_sid_uid(sid)
+    if manifest_present() {
+        let record: string = gateway_state_get("manifest.node." + uid)
+        if record == "" {
+            return "board " + uid + " is not in the node manifest"
+        }
+        let own: bool = int_to_str(area) == secure_field(record, 0) && int_to_str(node) == secure_field(record, 1)
+        if own {
+            return ""
+        }
+        if secure_field(record, 2) == "relay" {
+            if secure_list_has(secure_field(record, 4), int_to_str(area)) {
+                return ""
+            }
+            return "relay " + uid + " may not speak for area " + int_to_str(area)
+        }
+        return "board " + uid + " is placed at " + secure_field(record, 0) + "/" + secure_field(record, 1)
+    }
+    let announced: string = gateway_state_get("secure.sid." + sid + ".areas")
+    if announced == "" || secure_list_has("," + announced, int_to_str(area)) {
+        return ""
+    }
+    return "the session of " + uid + " announced other areas"
+}
+
+// manifest_reading_allowed judges a reading by the device it names — every
+// reading starts with its version byte and the device's (version, area, node) —
+// and says a refusal once an hour per board.
+fn manifest_reading_allowed(sid: string, payload: string) bool {
+    if sid == "" || strlen(payload) < 6 {
+        return true
+    }
+    let area: u32 = u32(robohub_v1_get_u16(payload, 2))
+    let node: u32 = u32(robohub_v1_get_u16(payload, 4))
+    let refused: string = manifest_reading_refusal(sid, area, node)
+    if refused == "" {
+        return true
+    }
+    let count: u32 = gateway_state_get_u32("secure.reading_refused")
+    gateway_state_set_u32("secure.reading_refused", count + 1)
+    manifest_say(secure_sid_uid(sid), "reading", "a reading for " + int_to_str(area) + "/" + int_to_str(node) +
+        " was dropped: " + refused)
+    return false
+}
+
+// manifest_announce_refusal is why an announce that came up a session is not
+// taken, or "" when it is: never for this gateway's own area; with a manifest,
+// only from a relay and only for its areas; without one, not for an area or a
+// gateway id that another board's live session already holds.
+fn manifest_announce_refusal(sid: string, announce: Announce) string {
+    let area: u32 = u32(announce.area_id)
+    if area == gateway_area() {
+        return "area " + int_to_str(area) + " is this gateway's own"
+    }
+    if !secure_live(sid) {
+        return "it did not come up a session"
+    }
+    let uid: string = secure_sid_uid(sid)
+    if manifest_present() {
+        let record: string = gateway_state_get("manifest.node." + uid)
+        if record == "" {
+            return "board " + uid + " is not in the node manifest"
+        }
+        if secure_field(record, 2) != "relay" {
+            return "board " + uid + " is not a relay"
+        }
+        if !secure_list_has(secure_field(record, 4), int_to_str(area)) {
+            return "relay " + uid + " may not speak for area " + int_to_str(area)
+        }
+        return ""
+    }
+    let child: u32 = device_key(u32(announce.gateway.area_id), u32(announce.gateway.link_id))
+    let held: string = gateway_state_get("secure.child." + int_to_str(child) + ".sid")
+    if held != "" && held != sid && secure_live(held) && secure_sid_uid(held) != uid {
+        return "its gateway id is held by board " + secure_sid_uid(held)
+    }
+    let owner: u32 = gateway_state_get_u32("area." + int_to_str(area))
+    if owner != 0 {
+        let owner_sid: string = gateway_state_get("secure.child." + int_to_str(owner) + ".sid")
+        if owner_sid != "" && owner_sid != sid && secure_live(owner_sid) && secure_sid_uid(owner_sid) != uid {
+            return "area " + int_to_str(area) + " is held by board " + secure_sid_uid(owner_sid)
+        }
+    }
+    return ""
+}
+
+// manifest_relay_speaks is whether a relay the manifest lists may speak for an
+// area: its own — a relay in the mesh's own area carries the boards placed in it,
+// and is listed with no areas of its own — or one of its areas.
+fn manifest_relay_speaks(record: string, area: string) bool {
+    return secure_field(record, 2) == "relay" && (secure_field(record, 0) == area || secure_list_has(secure_field(record, 4), area))
+}
+
+// manifest_relay_refusal is why a session may not carry boards' frames in
+// RELAYED, or "" when it may: with a manifest, only a relay that is listed and
+// not revoked; without one, any session (as any derivable key is answered).
+fn manifest_relay_refusal(relay_uid: string) string {
+    if !manifest_present() {
+        return ""
+    }
+    let record: string = gateway_state_get("manifest.node." + relay_uid)
+    if record == "" {
+        return "board " + relay_uid + " is not in the node manifest"
+    }
+    if secure_field(record, 3) == "1" {
+        return "relay " + relay_uid + " is revoked"
+    }
+    if secure_field(record, 2) != "relay" {
+        return "board " + relay_uid + " is not a relay"
+    }
+    return ""
+}
+
+// manifest_relayed_hello_refusal is why a board's hello carried by a relay is
+// not answered, or "" when it may be: with a manifest the board must be listed,
+// and placed in an area the relay may speak for. Without one the board's key is
+// all there is to go by, as for a board heard directly.
+fn manifest_relayed_hello_refusal(relay_uid: string, uid: string) string {
+    if !manifest_present() {
+        return ""
+    }
+    let board: string = gateway_state_get("manifest.node." + uid)
+    if board == "" {
+        return "it is not in the node manifest"
+    }
+    let area: string = secure_field(board, 0)
+    if !manifest_relay_speaks(gateway_state_get("manifest.node." + relay_uid), area) {
+        return "relay " + relay_uid + " may not speak for area " + area
+    }
+    return ""
+}
+
+// manifest_relayed_reading_allowed judges a reading a board sent under its own
+// session through a relay: the board speaks for its own place (as a board heard
+// directly does), and the relay that carried it must speak for that area — with
+// a manifest, its own area or its areas; without one, the areas it announced,
+// when it announced any.
+fn manifest_relayed_reading_allowed(relay_sid: string, sid: string, payload: string) bool {
+    if strlen(payload) < 6 {
+        return false
+    }
+    if !manifest_reading_allowed(sid, payload) {
+        return false
+    }
+    let area: string = int_to_str(u32(robohub_v1_get_u16(payload, 2)))
+    let relay_uid: string = secure_sid_uid(relay_sid)
+    var refused: string = ""
+    if manifest_present() {
+        if !manifest_relay_speaks(gateway_state_get("manifest.node." + relay_uid), area) {
+            refused = "relay " + relay_uid + " may not speak for area " + area
+        }
+    } else {
+        let announced: string = gateway_state_get("secure.sid." + relay_sid + ".areas")
+        if announced != "" && !secure_list_has("," + announced, area) {
+            refused = "relay " + relay_uid + " announced other areas"
+        }
+    }
+    if refused == "" {
+        return true
+    }
+    gateway_state_set_u32("secure.reading_refused", gateway_state_get_u32("secure.reading_refused") + 1)
+    manifest_say(relay_uid, "relayed." + area, "a reading for area " + area + " carried by relay " + relay_uid +
+        " was dropped: " + refused)
+    return false
+}
+
+// manifest_device_sid is the session a command for a device goes under: the
+// session of the board the manifest places there, or — without a manifest —
+// of the board whose own readings came from there. "" when no board session is
+// known for it, and the command is routed as before (a child's area, or the
+// serial link).
+fn manifest_device_sid(area: u32, node: u32) string {
+    let place: string = int_to_str(area) + "." + int_to_str(node)
+    if manifest_present() {
+        return secure_uid_sid(gateway_state_get("manifest.place." + place))
+    }
+    let sid: string = gateway_state_get("secure.place." + place)
+    if secure_live(sid) {
+        return sid
+    }
+    return ""
+}
+
+// manifest_learn_place remembers, without a manifest, which board session a
+// device's readings come under, so a command for the device can be sealed for
+// that board wherever it is. A session that announced areas is a gateway's, and
+// what it carries is placed by area, not learnt here.
+fn manifest_learn_place(sid: string, payload: string) void {
+    if sid == "" || manifest_present() || strlen(payload) < 6 || gateway_state_get("secure.sid." + sid + ".areas") != "" {
+        return
+    }
+    let place: string = int_to_str(u32(robohub_v1_get_u16(payload, 2))) + "." + int_to_str(u32(robohub_v1_get_u16(payload, 4)))
+    if gateway_state_get("secure.place." + place) != sid {
+        gateway_state_set("secure.place." + place, sid)
+    }
+}

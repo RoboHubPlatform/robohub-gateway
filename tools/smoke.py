@@ -225,14 +225,18 @@ class Board:
     """A board's half of robohub-transport's sealed frames, as include/robohub/secure.h
     has it: a hello, the gateway's session, then frames carrying a counter and a tag."""
 
-    def __init__(self, k_gw: bytes):
-        self.uid = os.urandom(8)
+    def __init__(self, k_gw: bytes, uid: bytes = b""):
+        self.uid = uid or os.urandom(8)
         self.k_dev = hmac16(k_gw, b"rh-dev1" + self.uid)[:16]
         self.nonce_b = os.urandom(8)
         self.sid = b""
         self.k_up = b""
+        self.k_down = b""
+        self.counter = 0
 
-    def hello(self) -> bytes:
+    def hello(self, fresh: bool = False) -> bytes:
+        if fresh:
+            self.nonce_b = os.urandom(8)
         tag = hmac16(self.k_dev, b"rh-hello1" + self.uid + self.nonce_b)[:8]
         return frame(17, 0, self.uid + self.nonce_b + tag)
 
@@ -242,12 +246,61 @@ class Board:
         assert uid == self.uid and tag == want, "the session did not authenticate"
         self.sid = sid
         self.k_up = hmac16(self.k_dev, b"rh-up1" + self.nonce_b + nonce_g)[:16]
+        self.k_down = hmac16(self.k_dev, b"rh-down1" + self.nonce_b + nonce_g)[:16]
+        self.counter = 0
 
-    def sealed(self, counter: int, msg_id: int, inner: bytes) -> bytes:
+    def sealed(self, counter: int, msg_id: int, inner: bytes, tx_id: int = 0, sid: bytes = b"") -> bytes:
         flagged = msg_id | 0x8000
-        sid_counter = self.sid + struct.pack("<I", counter)
-        tag = hmac16(self.k_up, struct.pack("<HH", flagged, 0) + sid_counter + inner)[:8]
-        return frame(flagged, 0, sid_counter + inner + tag)
+        sid_counter = (sid or self.sid) + struct.pack("<I", counter)
+        tag = hmac16(self.k_up, struct.pack("<HH", flagged, tx_id) + sid_counter + inner)[:8]
+        return frame(flagged, tx_id, sid_counter + inner + tag)
+
+    def next(self, msg_id: int, inner: bytes, tx_id: int = 0) -> bytes:
+        self.counter += 1
+        return self.sealed(self.counter, msg_id, inner, tx_id)
+
+    def open(self, msg_id: int, tx_id: int, payload: bytes) -> bytes:
+        """The inner payload of a frame the gateway sealed for this board."""
+        assert msg_id & 0x8000, "the gateway sent a plain frame"
+        sid_counter, inner, tag = payload[:6], payload[6:-8], payload[-8:]
+        want = hmac16(self.k_down, struct.pack("<HH", msg_id, tx_id) + sid_counter + inner)[:8]
+        assert sid_counter[:2] == self.sid and tag == want, "the gateway's frame did not authenticate"
+        return inner
+
+
+def uplink_session(sock, board, timeout: float = 3.0):
+    """Says a board's hello up an uplink connection and takes the session the
+    gateway answers with, or returns None when it does not answer."""
+    sock.sendall(board.hello())
+    # The hello is applied when the uplink is drained; it is asked for until the
+    # answer comes, since one drain can run before the hello has arrived.
+    deadline = time.time() + timeout
+    sock.settimeout(0.2)
+    buf = bytearray()
+    while time.time() < deadline:
+        http("POST", "/api/v1/uplink/pump")
+        try:
+            chunk = sock.recv(256)
+            if not chunk:
+                return None
+            buf += chunk
+        except socket.timeout:
+            continue
+        except OSError:
+            return None
+        while 0 in buf:
+            at = buf.index(0)
+            raw = bytes(buf[:at])
+            del buf[:at + 1]
+            if not raw:
+                continue
+            msg_id, _, payload = parse_frame(raw)
+            if msg_id == 18:
+                board.accept(payload)
+                sock.settimeout(timeout)
+                return payload
+    sock.settimeout(timeout)
+    return None
 
 
 def node_temperature(area: int, node: int):
@@ -585,29 +638,32 @@ def main():
     if listed.get((7, 1), {}).get("diag", {}).get("probe_ok") != 0x0085:
         failures.append(f"the node record does not carry its smoke: {body}")
 
-    # 6. The uplink: a relay dials in, announces the area it speaks for, and
-    # pushes a reading for a board the master does not hear directly.
+    # 6. The uplink: a relay dials in, opens a session as a board of this mesh,
+    # announces the area it speaks for under it, and pushes a reading for a
+    # board the master does not hear directly. The uplink takes no plain frame,
+    # even with ALLOW_PLAIN_FRAMES=1, which is the serial link's alone.
     uplink = socket.create_connection((HOST, UPLINK_PORT), timeout=5)
     uplink.sendall(frame(0x0101, 0, announce_payload(7, 2, 9)))
-    uplink.sendall(frame(0x0201, 0, reading_payload(9, 5, 12.5, 0, 9000)))
+    uplink.sendall(frame(0x0201, 0, reading_payload(9, 6, 11.5, 0, 8000)))
+    time.sleep(0.3)
+    http("POST", "/api/v1/uplink/pump")
+    status, body = http("GET", "/api/v1/diagnostics")
+    if json.loads(body).get("children") != 0 or node_temperature(9, 6) is not None:
+        failures.append(f"a plain frame on the uplink was taken: {body}")
+
+    relay = Board(k_gw)
+    if uplink_session(uplink, relay) is None:
+        failures.append("the relay's hello on the uplink was not answered")
+    uplink.sendall(relay.next(0x0101, announce_payload(7, 2, 9)))
+    uplink.sendall(relay.next(0x0201, reading_payload(9, 5, 12.5, 0, 9000)))
     time.sleep(0.3)
 
     status, body = http("POST", "/api/v1/uplink/pump")
     print("PUMP:", status, body)
-    try:
-        pumped = json.loads(body)
-    except Exception:
-        pumped = {}
-    if status != 200 or pumped.get("applied") != 2:
-        failures.append(f"the uplink frames were not applied: {status} {body}")
 
     status, body = http("GET", "/api/v1/nodes")
     print("NODES with uplink:", status, body)
-    try:
-        listed = {(n["area_id"], n["node_id"]): n for n in json.loads(body)}
-    except Exception:
-        listed = {}
-    if listed.get((9, 5), {}).get("temperature_c") != 12.5:
+    if node_temperature(9, 5) != 12.5:
         failures.append(f"the uplinked device is missing: {body}")
 
     status, body = http("GET", "/api/v1/diagnostics")
@@ -619,19 +675,22 @@ def main():
         failures.append(f"the announced child was not recorded: {body}")
 
     # 7. Down: a command for a device in the child's area is sent down its
-    # uplink, and the child's reply comes back up on the same link.
+    # uplink sealed under its session, and the child's reply comes back up on
+    # the same link.
     uplink.settimeout(3.0)
 
     def uplink_responder():
         try:
             raw = read_socket_frame(uplink)
-            msg_id, tx_id, payload = parse_frame(raw)
+            msg_id, tx_id, sealed = parse_frame(raw)
+            payload = relay.open(msg_id, tx_id, sealed)
+            msg_id &= 0x7FFF
             print(f"relay saw msg=0x{msg_id:04x} tx={tx_id} payload={payload.hex()}")
             area, node = struct.unpack("<HH", payload[2:6])
             opcode, argument = struct.unpack("<HI", payload[6:12])
             if msg_id != 0x0301 or opcode != 1 or argument != 300 or (area, node) != (9, 5):
                 failures.append(f"unexpected downlink frame {msg_id} {payload.hex()}")
-            uplink.sendall(frame(0x0302, tx_id, control_response(area, node, opcode, 0, 280)))
+            uplink.sendall(relay.next(0x0302, control_response(area, node, opcode, 0, 280), tx_id))
         except Exception as exc:  # noqa: BLE001
             failures.append(f"uplink responder: {exc}")
 
@@ -689,15 +748,16 @@ def main():
             proc.kill()
         proc = subprocess.Popen([BIN], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         wait_ready(proc)
-        os.write(master, board.sealed(2, 0x0201, sealed_inner(22.0)))
+        os.write(master, board.sealed(128, 0x0201, sealed_inner(22.0)))
         time.sleep(0.3)
         if node_temperature(AREA, 11) is not None:
             failures.append("a counter at or below the kept mark was taken after the restart")
-        os.write(master, board.sealed(70, 0x0201, sealed_inner(23.5)))
+        # A counter is restored at twice the store interval past the kept mark.
+        os.write(master, board.sealed(129, 0x0201, sealed_inner(23.5)))
         time.sleep(0.3)
         if node_temperature(AREA, 11) != 23.5:
             failures.append(f"the board was not heard after the restart: {node_temperature(AREA, 11)}")
-        os.write(master, board.sealed(70, 0x0201, sealed_inner(99.0)))
+        os.write(master, board.sealed(129, 0x0201, sealed_inner(99.0)))
         time.sleep(0.3)
         if node_temperature(AREA, 11) != 23.5:
             failures.append("a replayed frame was taken")

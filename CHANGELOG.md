@@ -87,3 +87,11 @@ The gateway page shows a frame history, newest first, with selectable windows
 of 10, 25, 50, 100, 500 and 1000 rows and CSV export. A node's `timestamp_ms`
 is its own uptime; the gateway records the wall-clock `received_at_ms` beside
 it and renders that as local date/time. Page and API carry both.
+
+## [0.6.0] - 2026-11-14
+
+The gateway knows its boards. Mesh writes a node manifest (`nodes.txt`, beside the gateway key): each board's id, place, role and whether it is revoked. A board not in it, or revoked, is refused, and a revoked board's sessions end. A board's readings are taken only for its own place; a relay speaks only for the areas it is given, and no one may announce the gateway's own area.
+
+Boards behind a relay are authenticated end to end: the relay forwards their handshake and sealed frames in `RELAYED`, the gateway opens them with the board's own key and keeps the readings under the board's id, and commands go back to each board through the relay it came by. A gateway in relay mode does the same for boards its parent planned.
+
+A session belongs to the link it was opened on; a replayed hello is refused; a live session is never overwritten; counters are saved so a restart leaves no replay window; tags are compared in constant time. Plain frames are refused on the network uplink whatever `ALLOW_PLAIN_FRAMES` says, and a hello posted over HTTP is answered in the response rather than on the serial line. Needs rho-robohub 0.5.3 for the uplink limits.
