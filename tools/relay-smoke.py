@@ -25,7 +25,13 @@ key and keeps each reading under the board's id. This checks:
   inside RELAYED are all refused;
 - a gateway in relay mode carries a board its parent planned the same way;
 - after the master restarts the relay dials again, opens a new session,
-  announces again, and the board is heard under the session it held.
+  announces again, and the board is heard under the session it held;
+- a board behind the relay whose key is rotated (the manifest names a newer
+  epoch) is sent REKEY through the relay, and its REKEY_ACK comes back through
+  it: the relay carries both whole, as it carries any sealed frame;
+- a C relay wired to the master's serial link (RELAYED sealed under its serial
+  session) carries a board the same way: its session, its reading, a command,
+  a diagnostic and a REKEY.
 
 It builds the relay when it is not built and a C toolchain is there, and says
 SKIP and exits 0 when it cannot be built.
@@ -310,6 +316,66 @@ def relayed_answer(conn, relay_board: Board, timeout: float = 3.0):
     return None
 
 
+def rekey_report(work: str) -> dict:
+    out = {}
+    try:
+        for line in open(os.path.join(work, "rekey.txt")):
+            if line.strip() and not line.startswith("#"):
+                uid, epoch, status, _ = line.strip().split("|")
+                out[uid] = (int(epoch), status)
+    except OSError:
+        pass
+    return out
+
+
+def rotate_through(wire: Wire, board: Board, k_gw: bytes, work: str) -> bool:
+    """Waits for the REKEY the master sends a board in its grace epoch, answers
+    it as robohub-transport does, and waits for the master to confirm. The board
+    takes the new key for its next hello."""
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        got = wire.next(max(0.05, deadline - time.time()))
+        if got is None:
+            return False
+        msg_id, tx_id, payload = got
+        if msg_id != 0x8014:
+            continue
+        inner = board.open(msg_id, tx_id, payload)
+        epoch = struct.unpack("<I", inner[:4])[0]
+        mask = hmac16(board.k_dev, b"rh-wrap1" + payload[:6])[:16]
+        key = bytes(a ^ b for a, b in zip(inner[4:20], mask))
+        if key != hmac16(k_gw, b"rh-dev2" + board.uid + struct.pack("<I", epoch))[:16]:
+            return False
+        proof = hmac16(key, b"rh-rekey-ok" + board.uid + struct.pack("<I", epoch))[:8]
+        wire.write(board.next(0x0015, struct.pack("<I", epoch) + proof, tx_id))
+        board.k_dev = key
+        return wait_for(lambda: rekey_report(work).get(board.uid.hex()) == (epoch, "confirmed"), 4.0)
+    return False
+
+
+def diagnostic(wire: Wire, board: Board, area: int, node: int):
+    """Asks the master for a board's diagnostics; the board opens the sealed
+    request and answers sealed. Returns (status, the request's bytes or None)."""
+    seen = {}
+
+    def responder():
+        got = wire.next(4.0)
+        if got is None or got[0] != 0x8401:
+            return
+        msg_id, tx_id, payload = got
+        try:
+            seen["inner"] = board.open(msg_id, tx_id, payload)
+        except AssertionError:
+            return
+        wire.write(board.next(0x0402, smoke.diag_response(area, node, 777, 0x0001, 0), tx_id))
+
+    t = threading.Thread(target=responder)
+    t.start()
+    status, _ = smoke.http("GET", f"/api/v1/nodes/{area}/{node}/diagnostics")
+    t.join(timeout=6)
+    return status, seen.get("inner")
+
+
 def main():
     if not os.path.exists(smoke.BIN):
         print(f"SKIP: the gateway is not built ({smoke.BIN})")
@@ -333,6 +399,9 @@ def main():
     honest = Board(k_gw)     # a board behind the rogue relay: 9/8
     child = Board(k_gw)      # a gateway in relay mode for area 12
     planned = Board(k_gw)    # a board the master planned, on the child's link: 12/7
+    rotating = Board(k_gw)   # behind the relay, 7/4, its key to be rotated to epoch 1
+    serial_relay = Board(k_gw)  # a C relay on the master's serial link, in area 7
+    wired = Board(k_gw)      # behind the serial relay, 7/5, its key to be rotated too
     write_secret(os.path.join(work, "relay.key"), relay.k_dev.hex())
     write_secret(os.path.join(work, "nodes.txt"), "\n".join([
         "# uid|area|node|role|epoch|revoked|areas",
@@ -344,11 +413,14 @@ def main():
         f"{honest.uid.hex()}|{RELAY_AREA}|8|board|0|0|",
         f"{child.uid.hex()}|12|0|relay|0|0|12",
         f"{planned.uid.hex()}|12|7|board|0|0|",
+        f"{rotating.uid.hex()}|{AREA}|4|board|1|0|",
+        f"{serial_relay.uid.hex()}|{AREA}|22|relay|0|0|",
+        f"{wired.uid.hex()}|{AREA}|5|board|1|0|",
     ]))
 
-    # The master's own serial: nothing writes to it, so the relay is the only
-    # way its boards reach it.
-    _gw_master, gw_slave = pty.openpty()
+    # The master's own serial: nothing writes to it until a second C relay is
+    # wired to it, near the end.
+    gw_master, gw_slave = pty.openpty()
     env = dict(os.environ)
     env.pop("ALLOW_PLAIN_FRAMES", None)
     env.update({
@@ -507,6 +579,66 @@ def main():
               "the board is heard again under the session it held, through the relay's new session")
         status, body, seen = command(boards, near, AREA, 3, 900)
         check(status == 200, f"and a command reaches it after the restart ({status} {body})")
+
+        # --- A key rotated through the relay ---------------------------------
+        boards.drain()
+        check(board_session(boards, rotating), "a board in its grace epoch gets a session through the relay")
+        boards.write(rotating.next(0x0201, telemetry(AREA, 4, 25.5)))
+        check(rotate_through(boards, rotating, k_gw, work), "it is sent REKEY through the relay, and its answer confirms epoch 1")
+        boards.drain()
+        check(board_session(boards, rotating), "its next hello, under the new key, gets a session through the relay")
+        boards.write(rotating.next(0x0201, telemetry(AREA, 4, 26.5)))
+        check(wait_for(lambda: node_temperature(AREA, 4) == 26.5), "and its reading reaches the master")
+
+        # --- A C relay on the master's serial link ---------------------------
+        wired_fd, wired_slave = pty.openpty()
+        os.set_blocking(wired_fd, False)
+        wired_wire = Wire(wired_fd)
+        os.set_blocking(gw_master, False)
+        write_secret(os.path.join(work, "serial-relay.key"), serial_relay.k_dev.hex())
+        serial_env = dict(os.environ)
+        serial_env.pop("RHO_PARENT_HOST", None)
+        serial_env.pop("RHO_PARENT_PORT", None)
+        serial_env.update({
+            "RHO_UART1": os.ttyname(wired_slave),
+            # No parent to dial: the relay's parent link is its console, which
+            # is the master's serial link.
+            "RHO_PARENT_LINK": "console",
+            "RH_SECURE_UID": serial_relay.uid.hex(),
+            "RH_SECURE_KEY_FILE": os.path.join(work, "serial-relay.key"),
+        })
+        serial_relay_proc = subprocess.Popen([RELAY_BIN], env=serial_env, stdin=gw_master, stdout=gw_master,
+                                             stderr=relay_log)
+        try:
+            # The relay asks for its session when the first board frame comes to
+            # carry, and that frame is lost; the board says hello again.
+            opened = False
+            for _ in range(5):
+                wired_wire.drain()
+                if board_session(wired_wire, wired, 2.5):
+                    opened = True
+                    break
+            check(opened, "a board behind a C relay on the master's serial link gets a session through it")
+            wired_wire.write(wired.next(0x0201, telemetry(AREA, 5, 27.5)))
+            check(wait_for(lambda: node_temperature(AREA, 5) == 27.5),
+                  "its sealed reading reaches the master inside RELAYED on the serial link")
+            check(wired.uid.hex() in outbox() and serial_relay.uid.hex() not in outbox(),
+                  "and is kept under the board's id, not the relay's")
+            # It is in its grace epoch, so that reading brought it a REKEY.
+            check(rotate_through(wired_wire, wired, k_gw, work),
+                  "it is sent REKEY through the serial relay, and its answer confirms epoch 1")
+            status, body, seen = command(wired_wire, wired, AREA, 5, 400)
+            check(status == 200 and seen.get("msg_id") == 0x0301,
+                  f"a command for it goes down the serial link through the relay, and is answered ({status} {body})")
+            status, inner = diagnostic(wired_wire, wired, AREA, 5)
+            check(status == 200 and inner is not None,
+                  f"a diagnostic for it goes down sealed under its session, through the relay ({status})")
+        finally:
+            serial_relay_proc.terminate()
+            try:
+                serial_relay_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                serial_relay_proc.kill()
     finally:
         pump.stop()
         log += stop(master)

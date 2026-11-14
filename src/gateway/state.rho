@@ -91,6 +91,12 @@ fn apply_uplink_frame(encoded: string, connection: u32) void {
     let source: string = secure_frame_source(received)
     let sid: string = secure_frame_sid(received)
 
+    // A board's answer to a new key it was sent (gateway/keys.rho).
+    if frame.msg_id == MESSAGE_ID_REKEY_ACK {
+        keys_rekey_ack(sid, frame.payload)
+        return
+    }
+
     // A board's frame a relay on this connection carried, whole: opened with the
     // board's own key (gateway/relayed.rho).
     if frame.msg_id == MESSAGE_ID_RELAYED {
@@ -539,10 +545,23 @@ fn device_diagnostics(req: Request) Response {
 
     let device: DeviceId = DeviceId { u16(area), u16(node) }
     let request: DiagRequest = DiagRequest { device, 255 }
-    let encoded: string = robohub_v1_frame(
-        MESSAGE_ID_DIAG_REQUEST, tx, diag_request_marshal(request))
-    if !gateway_serial_write(encoded) {
-        return gateway_error(503, "the serial link is unavailable")
+    // Sealed as a command is: under the session of the board placed there, on
+    // the link that session is held to; else under the serial link's session
+    // (plain only where ALLOW_PLAIN_FRAMES allows it); else not at all.
+    manifest_refresh(false)
+    let board_sid: string = manifest_device_sid(area, node)
+    if board_sid != "" {
+        if !secure_send(board_sid, MESSAGE_ID_DIAG_REQUEST, tx, diag_request_marshal(request)) {
+            return gateway_error(503, "the board's link is unavailable")
+        }
+    } else {
+        let encoded: string = secure_frame_down(MESSAGE_ID_DIAG_REQUEST, tx, diag_request_marshal(request))
+        if encoded == "" {
+            return gateway_error(409, "the board has no authenticated session yet")
+        }
+        if !gateway_serial_write(encoded) {
+            return gateway_error(503, "the serial link is unavailable")
+        }
     }
 
     let response: string = gateway_rpc_wait(tx, 2000)

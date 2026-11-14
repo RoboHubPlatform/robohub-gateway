@@ -95,3 +95,7 @@ The gateway knows its boards. Mesh writes a node manifest (`nodes.txt`, beside t
 Boards behind a relay are authenticated end to end: the relay forwards their handshake and sealed frames in `RELAYED`, the gateway opens them with the board's own key and keeps the readings under the board's id, and commands go back to each board through the relay it came by. A gateway in relay mode does the same for boards its parent planned.
 
 A session belongs to the link it was opened on; a replayed hello is refused; a live session is never overwritten; counters are saved so a restart leaves no replay window; tags are compared in constant time. Plain frames are refused on the network uplink whatever `ALLOW_PLAIN_FRAMES` says, and a hello posted over HTTP is answered in the response rather than on the serial line. Needs rho-robohub 0.5.3 for the uplink limits.
+
+## [0.7.0] - 2026-11-14
+
+Board keys can be rotated. The manifest's epoch is the key a board should have: a board still on the one before is let in for a grace period and handed its new key (`REKEY`); its confirmation ends the old key, and drops any other session that still used it. A board that cannot store a key says so, and Mesh shows it. Status is in `rekey.txt` and `GET /api/v1/keys`. Diagnostics go to a board sealed under its session. A C relay on the serial link carries its boards end to end.

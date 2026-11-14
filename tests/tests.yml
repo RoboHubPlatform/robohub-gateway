@@ -13,6 +13,13 @@ suites:
     kind: command
     tags: [smoke, security]
     command: [python3, tools/security-smoke.py]
+  # Key epochs and their rotation: the grace epoch, REKEY and its proof, the old
+  # key refused once the new one is confirmed, a board that cannot rotate, and
+  # the C host node rewriting its key file (skipped when that node is not built).
+  - name: gateway-rekey
+    kind: command
+    tags: [smoke, security, rekey]
+    command: [python3, tools/rekey-smoke.py]
   # The C relay end to end: boards sealed behind it, their frames carried whole
   # in RELAYED and opened with their own keys; the downlink through it; a relay
   # that forges; the USB port; a gateway in relay mode; the master restarting.

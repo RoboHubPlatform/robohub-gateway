@@ -23,8 +23,9 @@ module gateway.manifest
 //   <uid>|<area>|<node>|<role>|<epoch>|<revoked>|<areas>
 //
 // uid is the board's 16 hex digits, area and node its placement, role `board`
-// or `relay`, epoch the key epoch (not read yet), revoked `0` or `1`, and areas,
-// for a relay, the comma-separated areas it may speak for.
+// or `relay`, epoch the key epoch the board should be at (empty is 0; see
+// gateway/keys.rho), revoked `0` or `1`, and areas, for a relay, the
+// comma-separated areas it may speak for.
 //
 // With a manifest, a board that is not in it or is revoked is not answered when
 // it says hello and loses the sessions it holds; a board's readings are taken
@@ -144,7 +145,7 @@ fn manifest_areas(text: string) string {
 }
 
 // manifest_load replaces the nodes known with the ones a manifest's text lists,
-// as `area|node|role|revoked|areas` under each uid. A line that does not parse
+// as `area|node|role|revoked|areas|epoch` under each uid. A line that does not parse
 // is skipped and counted, never half-read.
 fn manifest_load(path: string, text: string) void {
     var old: string = gateway_state_get("manifest.uids")
@@ -180,9 +181,14 @@ fn manifest_load(path: string, text: string) void {
         let area: string = manifest_trim(secure_field(line, 1))
         let node: string = manifest_trim(secure_field(line, 2))
         let role: string = manifest_trim(secure_field(line, 3))
+        var epoch: string = manifest_trim(secure_field(line, 4))
         let gone: string = manifest_trim(secure_field(line, 5))
         let areas: string = manifest_trim(secure_field(line, 6))
+        if epoch == "" {
+            epoch = "0"
+        }
         if strlen(uid) != 16 || !manifest_is_hex(uid) || !manifest_is_decimal(area) || !manifest_is_decimal(node) ||
+            !manifest_is_decimal(epoch) || strlen(epoch) > 9 ||
             (role != "board" && role != "relay") || (gone != "0" && gone != "1") {
             skipped = skipped + 1
             continue
@@ -199,7 +205,7 @@ fn manifest_load(path: string, text: string) void {
             }
         }
         gateway_state_set("manifest.node." + uid, int_to_str(int_from_str(area)) + "|" + int_to_str(int_from_str(node)) +
-            "|" + role + "|" + gone + "|" + spoken)
+            "|" + role + "|" + gone + "|" + spoken + "|" + int_to_str(int_from_str(epoch)))
         // Which board a command for a place goes to.
         gateway_state_set("manifest.place." + int_to_str(int_from_str(area)) + "." + int_to_str(int_from_str(node)), uid)
     }
@@ -268,7 +274,16 @@ fn manifest_enforce() void {
             continue
         }
         let uid: string = secure_sid_uid(sid)
-        let refused: string = manifest_refusal(uid)
+        var refused: string = manifest_refusal(uid)
+        // A session under a key epoch the manifest no longer takes: older than
+        // the grace epoch. (One under the grace epoch stays, even once the board
+        // has confirmed the new key under it: the board goes on sending under it
+        // until its next hello, and would not be heard until then.)
+        let epoch: u32 = manifest_epoch(uid)
+        let held: u32 = keys_session_epoch(sid)
+        if refused == "" && held + 1 < epoch {
+            refused = "its key epoch " + int_to_str(held) + " is no longer taken"
+        }
         if refused != "" {
             secure_drop_session(sid)
             secure_log("session " + sid + " of board " + uid + " dropped: " + refused)
@@ -297,6 +312,15 @@ fn manifest_enforce() void {
     if dropped > 0 {
         secure_store()
     }
+}
+
+// manifest_epoch is the key epoch the manifest names for a board: 0 when it
+// names none, or there is no manifest.
+fn manifest_epoch(uid: string) u32 {
+    if !manifest_present() {
+        return 0
+    }
+    return u32(int_from_str(secure_field(gateway_state_get("manifest.node." + uid), 5)))
 }
 
 // manifest_refusal is why the manifest does not accept a board — not listed, or

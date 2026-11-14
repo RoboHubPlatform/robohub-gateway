@@ -33,6 +33,7 @@ include "gateway/security.rho"
 include "gateway/wire/protocol.rho"
 include "gateway/secure.rho"
 include "gateway/manifest.rho"
+include "gateway/keys.rho"
 include "gateway/ingest.rho"
 include "gateway/stream.rho"
 include "gateway/history.rho"
@@ -59,6 +60,7 @@ route POST "/api/v1/nodes/{area}/{node}/sampling-rate" => device_sampling_rate
 route POST "/api/v1/nodes/{area}/{node}/command" => device_command
 route POST "/api/v1/nodes/{area}/{node}/switch" => device_switch
 route GET  "/api/v1/diagnostics" => diagnostics
+route GET  "/api/v1/keys" => keys_list
 route POST "/api/v1/telemetry/sampling-rate" => set_sampling_rate
 route POST "/api/v1/frames" => ingest_http_frame
 route POST "/api/v1/devices" => device_register

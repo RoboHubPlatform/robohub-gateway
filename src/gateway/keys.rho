@@ -1,0 +1,336 @@
+//
+// @file keys.rho
+// @brief Key epochs: which key a board's hello is tried under, rotating a board to the next one, and what is said about it.
+//
+// @module gateway.keys
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-11-14
+//
+// SPDX-License-Identifier: MIT
+//
+
+module gateway.keys
+
+// Key epochs and their rotation (REKEY).
+//
+// A board's key derives from the gateway's key, its id and an epoch:
+//
+//   K_dev(0) = HMAC-SHA256(K_gw, "rh-dev1" | uid)[0:16]
+//   K_dev(n) = HMAC-SHA256(K_gw, "rh-dev2" | uid | n as u32 LE)[0:16]
+//
+// The node manifest says which epoch each board should be at (gateway/manifest.rho,
+// the epoch field). A hello does not say which key it was made with, so it is
+// tried under the manifest's epoch first, and then under the one before it — the
+// grace epoch — for as long as the board has not confirmed the new one. The
+// session records the epoch it was opened under.
+//
+// A board whose session is under an older epoch than the manifest's is sent,
+// sealed under that session,
+//
+//   REKEY  new_epoch(u32) | K_dev(new) XOR HMAC-SHA256(K_dev(current), "rh-wrap1" | sid | ctr)[0:16]
+//
+// with sid and ctr the frame's own session id and counter. It answers
+//
+//   REKEY_ACK  new_epoch(u32) | HMAC-SHA256(K_dev(new), "rh-rekey-ok" | uid | new_epoch)[0:8]
+//
+// and once the proof checks, the new epoch is the board's confirmed one: from
+// then on a hello under an older epoch is refused, and the sessions it still
+// holds under one, other than the session that confirmed, are dropped. A hello
+// that authenticates under the manifest's epoch confirms it too — a board
+// flashed with its current key needs no REKEY. A board whose store cannot keep a
+// key answers epoch 0 and a zero proof: it cannot rotate, which is said and
+// kept, and it stays in its grace epoch.
+//
+// What happened to each board's key is kept with the sessions and written as
+// `rekey.txt` beside the manifest, one line per board, for Mesh to show:
+//
+//   <uid>|<epoch>|<status>|<unix time>
+//
+// status `confirmed` (the board holds epoch) or `cannot` (it was asked to move to
+// epoch and cannot store a key). GET /api/v1/keys answers the same as JSON.
+//
+// Whoever holds a board's old key and recorded the REKEY frame can unwrap the new
+// one: there is no forward secrecy without a key exchange, which this protocol
+// does not have. A rotation ends the use of a key that leaks after it is done.
+
+// The labels the rotation hashes, as hex.
+const KEYS_LABEL_DEV2: string = "72682d64657632"
+const KEYS_LABEL_WRAP: string = "72682d7772617031"
+const KEYS_LABEL_REKEY_OK: string = "72682d72656b65792d6f6b"
+// A REKEY that is not answered is sent again on a later frame after this long,
+// at most this many times in one session.
+const KEYS_REKEY_RETRY_S: u32 = 20
+const KEYS_REKEY_TRIES: u32 = 3
+
+// keys_u32_hex is a number as its four little-endian bytes, in hex.
+fn keys_u32_hex(value: u32) string {
+    return secure_hex(robohub_v1_put_u32(value))
+}
+
+// keys_device_key is a board's key at an epoch, as 32 hex digits.
+fn keys_device_key(uid: string, epoch: u32) string {
+    if epoch == 0 {
+        return secure_device_key(uid)
+    }
+    return str_slice(rho_hmac_sha256_hex(secure_gateway_key(), KEYS_LABEL_DEV2 + uid + keys_u32_hex(epoch)), 0, 32)
+}
+
+// keys_xor is two byte strings of one length, as hex, combined byte by byte.
+fn keys_xor(a_hex: string, b_hex: string) string {
+    let a: string = secure_bytes(a_hex)
+    let b: string = secure_bytes(b_hex)
+    var out: string = ""
+    var i: u32 = 0
+    while i < strlen(a) && i < strlen(b) {
+        out = out + str_from_byte(u8(u32(str_at(a, i)) ^ u32(str_at(b, i))))
+        i = i + 1
+    }
+    return secure_hex(out)
+}
+
+// keys_confirmed is the newest epoch a board has proven it holds, or -1 when it
+// has proven none since this gateway began keeping track.
+fn keys_confirmed(uid: string) i32 {
+    let kept: string = gateway_state_get("keys.confirmed." + uid)
+    if kept == "" {
+        return -1
+    }
+    return i32(int_from_str(kept))
+}
+
+// keys_hello_epoch is the epoch a board's hello authenticates under, or -1 when
+// none it may use does: the manifest's, then — while the board has not
+// confirmed that one — the one before it.
+fn keys_hello_epoch(uid: string, message: string, tag: string) i32 {
+    let epoch: u32 = manifest_epoch(uid)
+    if secure_equal(secure_tag(keys_device_key(uid, epoch), message), tag) {
+        return i32(epoch)
+    }
+    if epoch == 0 || keys_confirmed(uid) >= i32(epoch) {
+        return -1
+    }
+    if secure_equal(secure_tag(keys_device_key(uid, epoch - 1), message), tag) {
+        return i32(epoch - 1)
+    }
+    return -1
+}
+
+// keys_session_epoch is the epoch a session was opened under.
+fn keys_session_epoch(sid: string) u32 {
+    return u32(int_from_str(secure_field(gateway_state_get("secure.sid." + sid), 4)))
+}
+
+// keys_opened records that a hello authenticated under an epoch: under the
+// manifest's (above 0), it is that epoch confirmed.
+fn keys_opened(uid: string, epoch: u32, sid: string) void {
+    if epoch > 0 && epoch == manifest_epoch(uid) && keys_confirmed(uid) < i32(epoch) {
+        keys_confirm(uid, epoch, sid, "its hello is under the new key")
+    }
+}
+
+// keys_set_status keeps what last happened to a board's key, and writes the
+// file Mesh reads.
+fn keys_set_status(uid: string, epoch: u32, status: string) void {
+    gateway_state_set("keys.status." + uid, int_to_str(epoch) + "|" + status + "|" + int_to_str(secure_now_s()))
+    if !secure_list_has("," + gateway_state_get("keys.uids"), uid) {
+        gateway_state_set("keys.uids", gateway_state_get("keys.uids") + uid + ",")
+    }
+    keys_write_report()
+}
+
+// keys_confirm makes an epoch a board's confirmed one, and drops the sessions it
+// holds under an older one, other than `keep`: a key taken from the board before
+// the rotation no longer opens or holds a session.
+fn keys_confirm(uid: string, epoch: u32, keep: string, why: string) void {
+    gateway_state_set("keys.confirmed." + uid, int_to_str(epoch))
+    keys_set_status(uid, epoch, "confirmed")
+    secure_log("the key of board " + uid + " is at epoch " + int_to_str(epoch) + ": " + why)
+    var rest: string = gateway_state_get("secure.sids")
+    while rest != "" {
+        let at: i32 = str_index_of(rest, ",")
+        var sid: string = rest
+        if at < 0 {
+            rest = ""
+        } else {
+            sid = str_slice(rest, 0, u32(at))
+            rest = str_slice(rest, u32(at) + 1, strlen(rest) - u32(at) - 1)
+        }
+        if sid != "" && sid != keep && secure_live(sid) && secure_sid_uid(sid) == uid && keys_session_epoch(sid) < epoch {
+            secure_drop_session(sid)
+            secure_log("session " + sid + " of board " + uid + " dropped: it was opened under an older key")
+        }
+    }
+    secure_store()
+}
+
+// keys_rekey_due sends a REKEY under a session that has just carried a frame,
+// when the session is under an older epoch than the manifest's, the board has
+// not said it cannot rotate to it, and no REKEY is waiting for an answer.
+fn keys_rekey_due(sid: string) void {
+    let uid: string = secure_sid_uid(sid)
+    if uid == "" {
+        return
+    }
+    let target: u32 = manifest_epoch(uid)
+    let current: u32 = keys_session_epoch(sid)
+    if current >= target || keys_confirmed(uid) >= i32(target) {
+        return
+    }
+    let status: string = gateway_state_get("keys.status." + uid)
+    if secure_field(status, 1) == "cannot" && secure_field(status, 0) == int_to_str(target) {
+        return
+    }
+    let sent: string = gateway_state_get("secure.sid." + sid + ".rekey")
+    let tries: u32 = u32(int_from_str(secure_field(sent, 1)))
+    let now: u32 = secure_now_s()
+    if sent != "" && (tries >= KEYS_REKEY_TRIES || now - u32(int_from_str(secure_field(sent, 0))) < KEYS_REKEY_RETRY_S) {
+        return
+    }
+    gateway_state_set("secure.sid." + sid + ".rekey", int_to_str(now) + "|" + int_to_str(tries + 1) + "|" + int_to_str(target))
+    if !keys_send_rekey(sid, uid, current, target) {
+        secure_log("a new key for board " + uid + " could not be sent under session " + sid)
+        return
+    }
+    secure_log("board " + uid + " is sent its key for epoch " + int_to_str(target) + " under session " + sid)
+}
+
+// keys_send_rekey seals a REKEY under one session. The wrap is bound to the
+// frame's own counter, which is the next one the session seals: nothing else is
+// sealed under it between here and the send.
+fn keys_send_rekey(sid: string, uid: string, current: u32, target: u32) bool {
+    let counter: u32 = gateway_state_get_u32("secure.down." + sid) + 1
+    let mask: string = str_slice(rho_hmac_sha256_hex(keys_device_key(uid, current),
+        KEYS_LABEL_WRAP + sid + keys_u32_hex(counter)), 0, 32)
+    let wrapped: string = keys_xor(keys_device_key(uid, target), mask)
+    if strlen(wrapped) != 32 {
+        return false
+    }
+    return secure_send(sid, MESSAGE_ID_REKEY, 0, robohub_v1_put_u32(target) + secure_bytes(wrapped))
+}
+
+// keys_rekey_ack acts on a board's REKEY_ACK that came up its session.
+fn keys_rekey_ack(sid: string, payload: string) void {
+    let uid: string = secure_sid_uid(sid)
+    if uid == "" || strlen(payload) != 12 {
+        return
+    }
+    let epoch: u32 = robohub_v1_get_u32(payload, 0)
+    let proof: string = secure_hex(str_slice(payload, 4, 8))
+    let asked: string = gateway_state_get("secure.sid." + sid + ".rekey")
+    if asked == "" {
+        return
+    }
+    let target: u32 = u32(int_from_str(secure_field(asked, 2)))
+    if epoch == 0 && proof == "0000000000000000" {
+        keys_set_status(uid, target, "cannot")
+        manifest_say(uid, "rekey", "board " + uid + " cannot rotate its key: it has no store for one")
+        secure_store()
+        return
+    }
+    if epoch != target {
+        return
+    }
+    let want: string = secure_tag(keys_device_key(uid, epoch), KEYS_LABEL_REKEY_OK + uid + keys_u32_hex(epoch))
+    if !secure_equal(want, proof) {
+        manifest_say(uid, "rekey-proof", "board " + uid + " answered its new key with a proof that does not check")
+        return
+    }
+    if keys_confirmed(uid) < i32(epoch) {
+        keys_confirm(uid, epoch, sid, "it stored the new key")
+    }
+}
+
+// keys_report is every board's key status as the lines of rekey.txt.
+fn keys_report() string {
+    var out: string = ""
+    var rest: string = gateway_state_get("keys.uids")
+    while rest != "" {
+        let at: i32 = str_index_of(rest, ",")
+        let uid: string = str_slice(rest, 0, u32(at))
+        rest = str_slice(rest, u32(at) + 1, strlen(rest) - u32(at) - 1)
+        let status: string = gateway_state_get("keys.status." + uid)
+        if uid != "" && status != "" {
+            out = out + uid + "|" + secure_field(status, 0) + "|" + secure_field(status, 1) + "|" + secure_field(status, 2) + "\n"
+        }
+    }
+    return out
+}
+
+// keys_report_path is `rekey.txt` beside the manifest, or "" without a key file.
+fn keys_report_path() string {
+    let dir: string = secure_key_dir()
+    if dir == "" {
+        return ""
+    }
+    if dir == "/" {
+        return "/rekey.txt"
+    }
+    return dir + "/rekey.txt"
+}
+
+fn keys_write_report() void {
+    let path: string = keys_report_path()
+    if path == "" {
+        return
+    }
+    if !rho_write_secret(path, "# uid|epoch|status|time, written by the gateway\n" + keys_report()) {
+        secure_log("the key status could not be written to " + path)
+    }
+}
+
+// keys_store_lines are the key statuses as lines of the sessions file:
+// `keys|<uid>|<confirmed>|<epoch>|<status>|<time>`.
+fn keys_store_lines() string {
+    var out: string = ""
+    var rest: string = gateway_state_get("keys.uids")
+    while rest != "" {
+        let at: i32 = str_index_of(rest, ",")
+        let uid: string = str_slice(rest, 0, u32(at))
+        rest = str_slice(rest, u32(at) + 1, strlen(rest) - u32(at) - 1)
+        if uid != "" {
+            out = out + "keys|" + uid + "|" + gateway_state_get("keys.confirmed." + uid) + "|" +
+                gateway_state_get("keys.status." + uid) + "\n"
+        }
+    }
+    return out
+}
+
+// keys_restore takes back one `keys|` line of the sessions file.
+fn keys_restore(line: string) void {
+    let uid: string = secure_field(line, 1)
+    if strlen(uid) != 16 || secure_list_has("," + gateway_state_get("keys.uids"), uid) {
+        return
+    }
+    gateway_state_set("keys.confirmed." + uid, secure_field(line, 2))
+    gateway_state_set("keys.status." + uid, secure_field(line, 3) + "|" + secure_field(line, 4) + "|" + secure_field(line, 5))
+    gateway_state_set("keys.uids", gateway_state_get("keys.uids") + uid + ",")
+}
+
+// keys_list answers GET /api/v1/keys: each board's epoch in the manifest, the
+// epoch it confirmed, and what last happened to its key.
+fn keys_list(req: Request) Response {
+    if !gateway_allowed(req, "read") {
+        return gateway_denied()
+    }
+    var out: string = "["
+    var first: bool = true
+    var rest: string = gateway_state_get("keys.uids")
+    while rest != "" {
+        let at: i32 = str_index_of(rest, ",")
+        let uid: string = str_slice(rest, 0, u32(at))
+        rest = str_slice(rest, u32(at) + 1, strlen(rest) - u32(at) - 1)
+        let status: string = gateway_state_get("keys.status." + uid)
+        if uid == "" || status == "" {
+            continue
+        }
+        if !first {
+            out = out + ","
+        }
+        first = false
+        out = out + "{\"uid\":\"" + uid + "\",\"manifest_epoch\":" + int_to_str(manifest_epoch(uid)) +
+            ",\"confirmed\":" + int_to_str(keys_confirmed(uid)) + ",\"epoch\":" + secure_field(status, 0) +
+            ",\"status\":\"" + secure_field(status, 1) + "\",\"time\":" + secure_field(status, 2) + "}"
+    }
+    return json(200, out + "]")
+}

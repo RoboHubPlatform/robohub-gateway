@@ -98,6 +98,10 @@ the runtime's counters and two masks: the probes that passed and the probes that
 failed. A probe in neither mask is **absent** — the board has no such device,
 which is a fact rather than a failure.
 
+The request is sealed under the board's session and sent on the link that
+session is held to — the serial link, an uplink connection, or through a relay —
+as a command is; a board with no session is not asked (`409`).
+
 ```json
 {
   "area_id": 7, "node_id": 1, "uptime_ms": 186095,
@@ -410,6 +414,13 @@ the gateway's own area. Sessions are bound to the link they were opened on, a
 recorded hello is not answered again, and counters are kept so that no frame
 recorded before a restart opens after it. See
 [docs/index.md](docs/index.md#the-node-manifest).
+
+A board's key can be rotated without reflashing it: the manifest names the key
+epoch each board should be at, a board in the epoch before it is sent its new key
+(`REKEY`, sealed under its session), and once it proves it stored it the old key
+opens nothing. What happened is written to `rekey.txt` beside the manifest and
+served at `GET /api/v1/keys`. See
+[docs/index.md](docs/index.md#key-epochs-and-rotation).
 
 The uplink is authenticated the same way. Whoever dials in — a board on Wi-Fi, or
 a relay below this gateway — says hello on its connection and is answered on it,

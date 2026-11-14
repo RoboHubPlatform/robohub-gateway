@@ -12,6 +12,8 @@ this checks every rule the manifest and the sessions carry:
 - an announce is taken only from a relay, for its own areas, and never for the
   gateway's own area — the last also without a manifest;
 - a session is bound to the link it was opened on;
+- a diagnostic request is sealed under the board's session, and refused when
+  the board has none;
 - a recorded hello is not answered again, does not rewrite the sessions file,
   and the serial link moves to a new session only once a frame comes under it;
 - a counter restored after a restart starts past anything used before it.
@@ -225,6 +227,12 @@ def main():
         sid, status = command_sid(master, AREA, 11, board)
         check(sid == board.sid and status == 200, "the first frame under the new session makes it the link's")
 
+        # --- Diagnostics are sealed under the board's session ---------------
+        status, inner = diag_exchange(master, AREA, 11, board)
+        check(inner is not None and inner[2:6] == struct.pack("<HH", AREA, 11),
+              "a diagnostic request reaches the board sealed under its session")
+        check(status == 200, f"and its sealed answer is the request's ({status})")
+
         # --- Frames posted over HTTP (POST /api/v1/frames) ------------------
         drain(master)
         status, body = post_frame(posted.hello(fresh=True))
@@ -325,6 +333,9 @@ def main():
         proc = start(env)
         first_relay = Board(k_gw)
         second_relay = Board(k_gw)
+        status, _ = smoke.http("GET", f"/api/v1/nodes/{AREA}/11/diagnostics")
+        check(status == 409 and not _serial_has_frame(master),
+              f"a diagnostic for a board with no session is refused, and nothing is written ({status})")
         a = socket.create_connection((HOST, UPLINK_PORT), timeout=5)
         b = socket.create_connection((HOST, UPLINK_PORT), timeout=5)
         check(uplink_session(a, first_relay) is not None, "without a manifest a derivable key is answered")
@@ -374,6 +385,30 @@ def main():
             print(" -", f)
         sys.exit(1)
     print("\nOK: the gateway's trust rules hold")
+
+
+def diag_exchange(master: int, area: int, node: int, answer: Board):
+    """Asks the gateway for a board's diagnostics; the board on the serial link
+    opens the request and answers sealed. Returns (status, the request's bytes)."""
+    seen = {}
+
+    def responder():
+        try:
+            msg_id, tx_id, sealed = parse_frame(read_frame(master))
+            seen["msg_id"] = msg_id
+            inner = answer.open(msg_id, tx_id, sealed)
+            seen["inner"] = inner
+            os.write(master, answer.next(0x0402, smoke.diag_response(area, node, 4242, 0x0085, 0), tx_id))
+        except Exception as exc:  # noqa: BLE001
+            seen["error"] = str(exc)
+
+    t = threading.Thread(target=responder)
+    t.start()
+    status, _ = smoke.http("GET", f"/api/v1/nodes/{area}/{node}/diagnostics")
+    t.join(timeout=5)
+    if seen.get("msg_id") != 0x8401:
+        return status, None
+    return status, seen.get("inner")
 
 
 def post_frame(data: bytes):

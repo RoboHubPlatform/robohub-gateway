@@ -47,8 +47,25 @@ namespace robohub.v1
 //     port(u8) | inner_msg_id(u16) | inner_tx_id(u16) | inner_payload
 //
 // with the two ids little-endian, as the transport header has them.
+//
+// REKEY and REKEY_ACK move a board to its next key epoch, and are only ever sent
+// sealed under the board's current session (robohub-transport secure.h). The
+// gateway sends REKEY when a board opened its session under an epoch older than
+// the node manifest's; the board stores the new key and answers REKEY_ACK, and
+// uses the new key from its next hello. Their payloads are fixed:
+//
+//     REKEY      new_epoch(u32) | wrapped(16)
+//                wrapped = K_dev(new) XOR HMAC-SHA256(K_dev(current), "rh-wrap1" | sid | ctr)[0:16]
+//     REKEY_ACK  new_epoch(u32) | proof(8)
+//                proof = HMAC-SHA256(K_dev(new), "rh-rekey-ok" | uid | new_epoch)[0:8]
+//
+// with sid and ctr the REKEY frame's own session id and counter, and every
+// integer little-endian. A board that cannot store a key answers epoch 0 and a
+// zero proof: it cannot rotate.
 enum MessageId {
     RELAYED = 19                    // 0x0013, both levels: a board's frame carried by a relay
+    REKEY = 20                      // 0x0014, L2, sealed: the gateway gives a board its next key
+    REKEY_ACK = 21                  // 0x0015, L2, sealed: the board proves it stored it
     HELLO = 257                     // 0x0101, L2: a board announces itself
     ANNOUNCE = 257                  // 0x0101, L1: a gateway announces itself
     TELEMETRY = 513                 // 0x0201, L2: a board's reading

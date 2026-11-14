@@ -21,6 +21,9 @@ module gateway.secure
 //
 //   K_dev  = HMAC-SHA256(K_gw, "rh-dev1" | uid)[0:16]
 //
+// That is epoch 0 of the board's key; a rotated key is a later epoch, and which
+// epoch a hello is tried under is gateway/keys.rho's to say.
+//
 // A board says hello; the gateway answers with a session bound to the board's
 // nonce, and from then on every frame either way carries a counter and a tag.
 // A frame that does not open is dropped. A plain frame is dropped too, unless
@@ -265,6 +268,7 @@ fn secure_drop_session(sid: string) void {
     }
     gateway_state_set("secure.sid." + sid + ".areas", "")
     gateway_state_set("secure.sid." + sid + ".link", "")
+    gateway_state_set("secure.sid." + sid + ".rekey", "")
     gateway_state_set("secure.sid." + sid, "")
     if gateway_state_get("secure.serial.sid") == sid {
         gateway_state_set("secure.serial.sid", "")
@@ -281,9 +285,10 @@ fn secure_drop_session(sid: string) void {
     }
 }
 
-// secure_store writes every live session — `sid|uid|k_up|k_down|expiry|up|down|link`
-// — the session the serial link holds and the one it is about to, and each
-// board's latest hello nonces, and forgets the expired sessions. It is called
+// secure_store writes every live session — `sid|uid|k_up|k_down|expiry|up|down|link|epoch`
+// — the session the serial link holds and the one it is about to, each board's
+// latest hello nonces and what happened to its key (gateway/keys.rho), and
+// forgets the expired sessions. It is called
 // when a session opens and when a counter has moved SECURE_STORE_EVERY past what
 // was last kept, so a restart loses neither the sessions nor the counters'
 // high-water marks.
@@ -315,8 +320,10 @@ fn secure_store() void {
             continue
         }
         kept = kept + sid + ","
-        out = out + sid + "|" + record + "|" + int_to_str(gateway_state_get_u32("secure.up." + sid)) + "|" +
-            int_to_str(gateway_state_get_u32("secure.down." + sid)) + "|" + gateway_state_get("secure.sid." + sid + ".link") + "\n"
+        out = out + sid + "|" + secure_field(record, 0) + "|" + secure_field(record, 1) + "|" + secure_field(record, 2) + "|" +
+            secure_field(record, 3) + "|" + int_to_str(gateway_state_get_u32("secure.up." + sid)) + "|" +
+            int_to_str(gateway_state_get_u32("secure.down." + sid)) + "|" + gateway_state_get("secure.sid." + sid + ".link") + "|" +
+            int_to_str(u32(int_from_str(secure_field(record, 4)))) + "\n"
     }
     gateway_state_set("secure.sids", kept)
     out = out + "serial|" + gateway_state_get("secure.serial.sid") + "|" + gateway_state_get("secure.serial.pending") + "\n"
@@ -335,6 +342,7 @@ fn secure_store() void {
             out = out + "nonce|" + uid + "|" + nonces + "\n"
         }
     }
+    out = out + keys_store_lines()
     if !rho_write_secret(path, out) {
         secure_log("the sessions could not be kept in " + path)
         return
@@ -381,6 +389,10 @@ fn secure_restore() u32 {
             gateway_state_set("secure.serial.pending", secure_field(line, 2))
             continue
         }
+        if sid == "keys" {
+            keys_restore(line)
+            continue
+        }
         if sid == "nonce" {
             let uid: string = secure_field(line, 1)
             if strlen(uid) == 16 && !secure_list_has("," + uids, uid) {
@@ -396,8 +408,9 @@ fn secure_restore() u32 {
         let uid: string = secure_field(line, 1)
         let up: u32 = u32(int_from_str(secure_field(line, 5)))
         let down: u32 = u32(int_from_str(secure_field(line, 6)))
+        // A session kept before epochs were is under epoch 0.
         gateway_state_set("secure.sid." + sid, uid + "|" + secure_field(line, 2) + "|" + secure_field(line, 3) + "|" +
-            int_to_str(expiry))
+            int_to_str(expiry) + "|" + int_to_str(u32(int_from_str(secure_field(line, 8)))))
         gateway_state_set_u32("secure.up." + sid, up + SECURE_STORE_EVERY + SECURE_STORE_EVERY)
         gateway_state_set_u32("secure.down." + sid, down + SECURE_STORE_EVERY + SECURE_STORE_EVERY)
         // The mark stays what the disk holds, so the first frame after the
@@ -500,11 +513,16 @@ fn secure_accept_hello_answer(payload: string) string {
     let uid: string = secure_hex(str_slice(payload, 0, 8))
     let nonce_b: string = secure_hex(str_slice(payload, 8, 8))
     let tag: string = secure_hex(str_slice(payload, 16, 8))
-    let k_dev: string = secure_device_key(uid)
-    if !secure_equal(secure_tag(k_dev, SECURE_LABEL_HELLO + uid + nonce_b), tag) {
+    // The key is the one of the epoch the manifest names for the board, or of
+    // the one before it while the board has not confirmed the new one.
+    manifest_refresh(false)
+    let found: i32 = keys_hello_epoch(uid, SECURE_LABEL_HELLO + uid + nonce_b, tag)
+    if found < 0 {
         secure_bad_hello(uid)
         return ""
     }
+    let epoch: u32 = u32(found)
+    let k_dev: string = keys_device_key(uid, epoch)
     // A hello is answered once: the same nonce again is a recording.
     if secure_hello_seen(uid, nonce_b) {
         let replayed: u32 = gateway_state_get_u32("secure.hello_replayed")
@@ -514,7 +532,6 @@ fn secure_accept_hello_answer(payload: string) string {
     }
     // A board the node manifest does not list, or lists as revoked, is not
     // given a session, however well its key derives.
-    manifest_refresh(false)
     let refused: string = manifest_refusal(uid)
     if refused != "" {
         manifest_say(uid, "hello", "a hello from board " + uid + " was refused: " + refused)
@@ -549,7 +566,8 @@ fn secure_accept_hello_answer(payload: string) string {
     let k_up: string = str_slice(rho_hmac_sha256_hex(k_dev, SECURE_LABEL_UP + nonce_b + nonce_g), 0, 32)
     let k_down: string = str_slice(rho_hmac_sha256_hex(k_dev, SECURE_LABEL_DOWN + nonce_b + nonce_g), 0, 32)
     gateway_state_set("secure.sid." + sid, uid + "|" + k_up + "|" + k_down + "|" +
-        int_to_str(secure_now_s() + SECURE_LIFETIME_S))
+        int_to_str(secure_now_s() + SECURE_LIFETIME_S) + "|" + int_to_str(epoch))
+    gateway_state_set("secure.sid." + sid + ".rekey", "")
     gateway_state_set_u32("secure.up." + sid, 0)
     gateway_state_set_u32("secure.down." + sid, 0)
     gateway_state_set_u32("secure.up_saved." + sid, 0)
@@ -568,8 +586,13 @@ fn secure_accept_hello_answer(payload: string) string {
     if str_index_of("," + gateway_state_get("secure.sids"), "," + sid + ",") < 0 {
         gateway_state_set("secure.sids", gateway_state_get("secure.sids") + sid + ",")
     }
+    var under: string = ""
+    if epoch > 0 {
+        under = " under key epoch " + int_to_str(epoch)
+    }
+    secure_log("session " + sid + " opened for board " + uid + under)
+    keys_opened(uid, epoch, sid)
     secure_store()
-    secure_log("session " + sid + " opened for board " + uid)
     return sid + "|" + secure_bytes(uid + sid + nonce_g + lifetime + session_tag)
 }
 
@@ -680,6 +703,11 @@ fn secure_open(frame: TransportFrame, bound: string, also: string) TransportFram
     }
     if counter >= gateway_state_get_u32("secure.up_saved." + sid) + SECURE_STORE_EVERY {
         secure_store()
+    }
+    // A board that has just shown it holds this session is moved to the
+    // manifest's key epoch when its session is under an older one.
+    if frame.msg_id - SECURE_FLAG != MESSAGE_ID_REKEY_ACK {
+        keys_rekey_due(sid)
     }
     var opened: TransportFrame
     opened.ok = true

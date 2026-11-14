@@ -82,6 +82,14 @@ fn ingest_frame(encoded: string) void {
 // frames are allowed: source is the board it is from and sid its session, both
 // "" for a plain frame.
 fn ingest_opened(frame: TransportFrame, source: string, sid: string) void {
+    // A board's answer to a new key it was sent (gateway/keys.rho). Only ever
+    // sealed: a plain one has no session to be the answer of.
+    if frame.msg_id == MESSAGE_ID_REKEY_ACK {
+        if sid != "" {
+            keys_rekey_ack(sid, frame.payload)
+        }
+        return
+    }
     // A board's frame a relay carried: it is opened with the board's own key.
     if frame.msg_id == MESSAGE_ID_RELAYED {
         if sid != "" {

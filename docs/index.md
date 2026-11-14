@@ -43,7 +43,14 @@ Every route but `/healthz` needs a token (see [Access](#access) below).
   deployed in, the area it speaks for, its uptime and what it has carried.
 
 - `GET /api/v1/nodes/{area}/{node}/diagnostics` — asks one device to run its
-  hardware smoke and records the answer with the device.
+  hardware smoke and records the answer with the device. The request is sealed
+  under the board's session, on the link that session is held to (a relay's,
+  for a board behind one), as a command is; `409` when the board has none.
+
+- `GET /api/v1/keys` — each board's key rotation as the gateway knows it: the
+  epoch the manifest names, the epoch the board confirmed, and what last
+  happened (`confirmed`, or `cannot` for a board that has no store for a key).
+  See [key epochs](#key-epochs-and-rotation).
 
 - `POST /api/v1/nodes/{area}/{node}/sampling-rate`, `…/switch`, `…/command` —
   a control sent to a named device: its reporting interval, a switch (on or
@@ -158,8 +165,8 @@ fedcba9876543210|7|20|relay|0|0|9,10
 ```
 
 `role` is `board` or `relay`; `areas` is, for a relay, the areas it may speak
-for; `revoked` is `0` or `1`; `epoch` is the key epoch, not read yet. With a
-manifest:
+for; `revoked` is `0` or `1`; `epoch` is the key epoch the board should be at
+(empty is 0; see [key epochs](#key-epochs-and-rotation)). With a manifest:
 
 - a hello from a board that is not listed, or is revoked, is not answered, and
   the refusal is logged once an hour per board;
@@ -184,6 +191,44 @@ live session holds is not taken over, and a session that announced areas is
 taken only for those. Every session is bound to the link it was opened on: a
 frame sealed under a session from one uplink connection is refused on another
 and on the serial link.
+
+### Key epochs and rotation
+
+A board's key has an epoch. Epoch 0 is `HMAC-SHA256(K_gw, "rh-dev1" | uid)[0:16]`;
+epoch n ≥ 1 is `HMAC-SHA256(K_gw, "rh-dev2" | uid | n as u32 LE)[0:16]`. A hello
+does not say which epoch it was made under, so the gateway tries the manifest's
+epoch for the board, then the one before it (the grace epoch) while the board
+has not confirmed the new one; the session records the epoch it was opened under.
+
+A board whose session is under the grace epoch is sent `REKEY` (`0x0014`),
+sealed under that session, on the first frame it sends: the new epoch and the new
+key wrapped under the current one, bound to the frame's own session id and
+counter. The board stores the key and answers `REKEY_ACK` (`0x0015`) with a proof
+made with the new key; the gateway checks it and the new epoch is the board's
+**confirmed** epoch. From then on a hello under an older epoch is refused, and
+any other session the board's id holds under one — someone else holding the old
+key — is dropped; the board's own session goes on until its next hello, which is
+under the new key. A hello that authenticates under the manifest's epoch confirms
+it too, so a board flashed with its current key needs no `REKEY`. An unanswered
+`REKEY` is sent again after 20 seconds on a later frame, at most three times a
+session. A board whose platform has no key store answers epoch 0 and a zero
+proof: it cannot rotate, which is kept and said, and it stays in its grace epoch
+and is not asked again until the manifest names another epoch.
+
+What happened to each board's key is kept with the sessions (across a restart)
+and written to `rekey.txt` beside the manifest, owner-only, for Mesh to show:
+
+```text
+# uid|epoch|status|time, written by the gateway
+0123456789abcdef|1|confirmed|1794668892
+```
+
+`GET /api/v1/keys` answers the same as JSON. A board posted over HTTP
+(`POST /api/v1/frames`) has no link a `REKEY` can go down, so it is not rotated;
+reflash it with its current key. Whoever holds a board's old key and recorded the
+`REKEY` frame can unwrap the new one — there is no forward secrecy — so after a
+key is known to have leaked, rotate and then reflash, or rotate while no one is
+listening.
 
 ### Sessions and replay
 
@@ -348,10 +393,19 @@ relay (`relay-host`, on `robohub-linux`, built natively when it is not built, an
 skipped where it cannot be) and sealed boards on one machine and checks a board's
 session and reading through the relay, a command down and its answer, a relay
 that forges, a plain command on the relay's USB port, a gateway in relay mode
-carrying a board its parent planned, and the master restarting.
+carrying a board its parent planned, the master restarting, a board's key
+rotated through the relay, and a second C relay wired to the master's serial link
+(`RHO_PARENT_LINK=console`: its own session on the serial link, the board's frames
+inside `RELAYED` under it) carrying a board's session, reading, command,
+diagnostic and key rotation.
 `tools/security-smoke.py` checks the rules above: the manifest, announces,
 sessions bound to their link, replayed hellos, counters across a restart, frames
-posted over HTTP, and relayed boards without a manifest.
+posted over HTTP, sealed diagnostics, and relayed boards without a manifest.
+`tools/rekey-smoke.py` checks key epochs: the grace epoch, `REKEY` and its proof,
+the old epoch refused after confirmation and another holder of it dropped, a board
+flashed at its current epoch, one too far behind, one that cannot rotate, a proof
+that does not check, a restart, and — when robohub-devices' `gateway_node` is
+built — the C host node rewriting its key file.
 
 ## Access
 
