@@ -343,6 +343,13 @@ fn relay_apply(encoded: string) void {
     }
     if received.msg_id >= SECURE_FLAG {
         let opened: TransportFrame = relay_open(received)
+        // The parent asks for a new session: it restarted, and the one this
+        // relay holds counts below the mark it restored.
+        if opened.ok && opened.msg_id == MESSAGE_ID_SESSION_RESET {
+            secure_log("relay: the parent asked for a new session")
+            relay_hello()
+            return
+        }
         if opened.ok && opened.msg_id == MESSAGE_ID_RELAYED {
             relay_carried_down(opened.payload)
         } else if opened.ok {

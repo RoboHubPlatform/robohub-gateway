@@ -58,6 +58,7 @@ fn robohub_v1_get_string(data: string, off: u32, width: u32) string {
 const MESSAGE_ID_RELAYED: u32 = 19
 const MESSAGE_ID_REKEY: u32 = 20
 const MESSAGE_ID_REKEY_ACK: u32 = 21
+const MESSAGE_ID_SESSION_RESET: u32 = 22
 const MESSAGE_ID_HELLO: u32 = 257
 const MESSAGE_ID_ANNOUNCE: u32 = 257
 const MESSAGE_ID_TELEMETRY: u32 = 513

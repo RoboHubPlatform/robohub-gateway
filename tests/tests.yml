@@ -29,3 +29,13 @@ suites:
     kind: command
     tags: [smoke, security, relay]
     command: [python3, tools/relay-smoke.py]
+  # A gateway restart, as the boards holding a session see it: the restored
+  # session's counter mark, SESSION_RESET down the serial link at open, through
+  # a relay inside RELAYED and on a new uplink connection, the board's new
+  # session heard at once, and a frame recorded before the restart still
+  # refused. The C host node on the serial link is heard again within seconds
+  # (skipped when robohub-devices' gateway_node is not built).
+  - name: gateway-restart
+    kind: command
+    tags: [smoke, security, restart]
+    command: [python3, tools/restart-smoke.py]

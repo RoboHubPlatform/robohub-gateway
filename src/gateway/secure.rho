@@ -55,6 +55,14 @@ const SECURE_STORE_EVERY: u32 = 64
 const SECURE_NONCES_KEPT: u32 = 8
 // A hello that does not authenticate is said at most once in this many seconds.
 const SECURE_BAD_HELLO_QUIET_S: u32 = 60
+// A board that goes on under a session restored after a restart counts below
+// the restored mark, and its frames are refused until it passes it. It is asked
+// for a new session instead (SESSION_RESET): at most once in this many seconds
+// per session, and this many times in all.
+const SECURE_RESET_RETRY_S: u32 = 10
+const SECURE_RESET_TRIES: u32 = 5
+// The reason byte a SESSION_RESET carries: the gateway restarted.
+const SECURE_RESET_REASON_RESTART: u32 = 1
 
 // The labels the protocol hashes, as hex.
 const SECURE_LABEL_DEV: string = "72682d64657631"
@@ -269,6 +277,8 @@ fn secure_drop_session(sid: string) void {
     gateway_state_set("secure.sid." + sid + ".areas", "")
     gateway_state_set("secure.sid." + sid + ".link", "")
     gateway_state_set("secure.sid." + sid + ".rekey", "")
+    gateway_state_set("secure.sid." + sid + ".restored", "")
+    gateway_state_set("secure.sid." + sid + ".reset", "")
     gateway_state_set("secure.sid." + sid, "")
     if gateway_state_get("secure.serial.sid") == sid {
         gateway_state_set("secure.serial.sid", "")
@@ -417,6 +427,15 @@ fn secure_restore() u32 {
         // restart moves the kept mark up past the restored counters.
         gateway_state_set_u32("secure.up_saved." + sid, up)
         gateway_state_set_u32("secure.down_saved." + sid, down)
+        // Restored: what the board last sent lies somewhere in (up, mark], and
+        // a frame of its in that window is the cue to ask it for a new session
+        // (secure_reset_restored). The downward counter needs nothing more: it
+        // is restored past anything the board accepted, by the same margin, so
+        // the board takes the request.
+        gateway_state_set("secure.sid." + sid + ".restored", int_to_str(up) + "|" +
+            int_to_str(up + SECURE_STORE_EVERY + SECURE_STORE_EVERY))
+        gateway_state_set("secure.sid." + sid + ".reset", "")
+        gateway_state_set("secure.uid." + uid + ".restored", "1")
         gateway_state_set("secure.uid." + uid, sid)
         // The link a session is held to comes back with it when it names one
         // that outlives a restart: the serial link, or the relay a board is
@@ -683,16 +702,18 @@ fn secure_open(frame: TransportFrame, bound: string, also: string) TransportFram
     }
     let counter: u32 = robohub_v1_get_u32(payload, 2)
     if counter <= gateway_state_get_u32("secure.up." + sid) {
+        // A board going on under a session restored after a restart, below
+        // the restored mark: asked for a new session rather than left unheard.
+        if secure_restored_window(frame, sid, record, counter) {
+            secure_reset_restored(sid, 0)
+        }
+        return secure_refused()
+    }
+    if !secure_tag_ok(frame, record) {
         return secure_refused()
     }
     let body_length: u32 = strlen(payload) - 14
     let inner: string = str_slice(payload, 6, body_length)
-    let header: string = secure_hex(robohub_v1_put_u16(u16(frame.msg_id)) + robohub_v1_put_u16(u16(frame.tx_id)))
-    let expected: string = secure_tag(secure_field(record, 1),
-        header + secure_hex(str_slice(payload, 0, 6)) + secure_hex(inner))
-    if !secure_equal(expected, secure_hex(str_slice(payload, 6 + body_length, 8))) {
-        return secure_refused()
-    }
     gateway_state_set_u32("secure.up." + sid, counter)
     // The first frame under a board's new session makes it the one frames to
     // the board are sealed under.
@@ -700,6 +721,11 @@ fn secure_open(frame: TransportFrame, bound: string, also: string) TransportFram
     if gateway_state_get("secure.uid." + uid + ".pending") == sid {
         gateway_state_set("secure.uid." + uid, sid)
         gateway_state_set("secure.uid." + uid + ".pending", "")
+    }
+    // ... and the sessions of the board's restored after a restart are done
+    // with once a new one carries a frame.
+    if !secure_restored(sid) && gateway_state_get("secure.uid." + uid + ".restored") != "" {
+        secure_drop_restored(uid, sid)
     }
     if counter >= gateway_state_get_u32("secure.up_saved." + sid) + SECURE_STORE_EVERY {
         secure_store()
@@ -715,6 +741,149 @@ fn secure_open(frame: TransportFrame, bound: string, also: string) TransportFram
     opened.tx_id = frame.tx_id
     opened.payload = inner
     return opened
+}
+
+// secure_tag_ok is whether a sealed frame's tag is the one the session's upward
+// key makes for it.
+fn secure_tag_ok(frame: TransportFrame, record: string) bool {
+    let payload: string = frame.payload
+    if strlen(payload) < 14 {
+        return false
+    }
+    let body_length: u32 = strlen(payload) - 14
+    let header: string = secure_hex(robohub_v1_put_u16(u16(frame.msg_id)) + robohub_v1_put_u16(u16(frame.tx_id)))
+    let expected: string = secure_tag(secure_field(record, 1),
+        header + secure_hex(str_slice(payload, 0, 6)) + secure_hex(str_slice(payload, 6, body_length)))
+    return secure_equal(expected, secure_hex(str_slice(payload, 6 + body_length, 8)))
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Sessions restored after a restart                                         */
+/* -------------------------------------------------------------------------- */
+
+// secure_restored is whether a session is one this run took back from disk,
+// and no new session of its board has replaced it yet.
+fn secure_restored(sid: string) bool {
+    return sid != "" && gateway_state_get("secure.sid." + sid + ".restored") != ""
+}
+
+// secure_restored_window is whether a frame refused for its counter is its
+// board going on under a restored session: the tag is the session's, and the
+// counter lies past what was kept and at or below the mark restored — what the
+// board may have sent before the restart, or since, as it kept counting.
+fn secure_restored_window(frame: TransportFrame, sid: string, record: string, counter: u32) bool {
+    if !secure_restored(sid) {
+        return false
+    }
+    let marks: string = gateway_state_get("secure.sid." + sid + ".restored")
+    let saved: u32 = u32(int_from_str(secure_field(marks, 0)))
+    let mark: u32 = u32(int_from_str(secure_field(marks, 1)))
+    return counter > saved && counter <= mark && secure_tag_ok(frame, record)
+}
+
+// secure_restored_elsewhere is whether a frame refused on an uplink connection
+// is its board going on under a session restored after a restart: the session
+// was held to a connection the restart closed, so no connection holds it now.
+// The board is asked for a new session on the connection the frame came on.
+fn secure_restored_elsewhere(frame: TransportFrame, connection: u32) void {
+    let sid: string = secure_frame_sid(frame)
+    if !secure_restored(sid) || secure_sid_link(sid) != "" || strlen(frame.payload) < 14 {
+        return
+    }
+    let record: string = gateway_state_get("secure.sid." + sid)
+    if record == "" || secure_now_s() >= u32(int_from_str(secure_field(record, 3))) {
+        return
+    }
+    let saved: u32 = u32(int_from_str(secure_field(gateway_state_get("secure.sid." + sid + ".restored"), 0)))
+    if robohub_v1_get_u32(frame.payload, 2) <= saved || !secure_tag_ok(frame, record) {
+        return
+    }
+    secure_reset_restored(sid, connection)
+}
+
+// secure_reset_restored asks the board that holds a restored session to drop
+// it and say hello again: a SESSION_RESET sealed under that session, down the
+// link it is held to — the serial link, or inside RELAYED through the relay a
+// board is behind — or, when connection is not 0, on that uplink connection. At
+// most once in SECURE_RESET_RETRY_S, SECURE_RESET_TRIES times, per session.
+fn secure_reset_restored(sid: string, connection: u32) bool {
+    if !secure_restored(sid) || !secure_live(sid) {
+        return false
+    }
+    if connection == 0 && secure_sid_link(sid) == "" {
+        return false
+    }
+    let sent: string = gateway_state_get("secure.sid." + sid + ".reset")
+    let tries: u32 = u32(int_from_str(secure_field(sent, 1)))
+    let now: u32 = secure_now_s()
+    if sent != "" && (tries >= SECURE_RESET_TRIES || now - u32(int_from_str(secure_field(sent, 0))) < SECURE_RESET_RETRY_S) {
+        return false
+    }
+    gateway_state_set("secure.sid." + sid + ".reset", int_to_str(now) + "|" + int_to_str(tries + 1))
+    let reason: string = str_from_byte(u8(SECURE_RESET_REASON_RESTART))
+    var written: bool = false
+    if connection != 0 {
+        written = gateway_uplink_reply(connection, secure_seal(sid, MESSAGE_ID_SESSION_RESET, 0, reason))
+    } else {
+        written = secure_send(sid, MESSAGE_ID_SESSION_RESET, 0, reason)
+    }
+    let uid: string = secure_sid_uid(sid)
+    if !written {
+        secure_log("session " + sid + " restored after restart: the request for board " + uid +
+            " to start a new session could not be sent")
+        return false
+    }
+    gateway_state_set_u32("secure.resets", gateway_state_get_u32("secure.resets") + 1)
+    secure_log("session " + sid + " restored after restart: asked board " + uid + " to start a new session")
+    return true
+}
+
+// secure_serial_opened asks every board that holds a restored session on the
+// serial link for a new one, as soon as the link is open.
+fn secure_serial_opened() void {
+    var rest: string = gateway_state_get("secure.sids")
+    while rest != "" {
+        let at: i32 = str_index_of(rest, ",")
+        var sid: string = rest
+        if at < 0 {
+            rest = ""
+        } else {
+            sid = str_slice(rest, 0, u32(at))
+            rest = str_slice(rest, u32(at) + 1, strlen(rest) - u32(at) - 1)
+        }
+        if secure_restored(sid) && secure_sid_link(sid) == "serial" {
+            ignore_bool_secure(secure_reset_restored(sid, 0))
+        }
+    }
+}
+
+fn ignore_bool_secure(value: bool) void {
+}
+
+// secure_drop_restored drops a board's restored sessions once a new session of
+// its, sid, has carried a frame.
+fn secure_drop_restored(uid: string, sid: string) void {
+    gateway_state_set("secure.uid." + uid + ".restored", "")
+    var dropped: bool = false
+    var rest: string = gateway_state_get("secure.sids")
+    while rest != "" {
+        let at: i32 = str_index_of(rest, ",")
+        var old: string = rest
+        if at < 0 {
+            rest = ""
+        } else {
+            old = str_slice(rest, 0, u32(at))
+            rest = str_slice(rest, u32(at) + 1, strlen(rest) - u32(at) - 1)
+        }
+        if old != sid && secure_restored(old) && secure_sid_uid(old) == uid {
+            secure_drop_session(old)
+            secure_log("session " + old + " restored after restart is dropped: board " + uid + " holds session " + sid + " now")
+            dropped = true
+        }
+    }
+    if dropped {
+        secure_store()
+    }
 }
 
 // secure_open_serial opens a frame from the serial link, under the session the
@@ -741,7 +910,10 @@ fn secure_open_serial(frame: TransportFrame) TransportFrame {
 // that connection opened and no other.
 fn secure_open_uplink(frame: TransportFrame, connection: u32) TransportFrame {
     let bound: string = gateway_state_get("secure.conn." + int_to_str(connection) + ".sid")
-    if bound == "" {
+    if bound == "" || secure_frame_sid(frame) != bound {
+        // A board going on under a session restored after a restart, on the
+        // new connection it dialled: asked for a new session there.
+        secure_restored_elsewhere(frame, connection)
         return secure_refused()
     }
     return secure_open(frame, bound, bound)

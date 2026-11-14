@@ -62,10 +62,22 @@ namespace robohub.v1
 // with sid and ctr the REKEY frame's own session id and counter, and every
 // integer little-endian. A board that cannot store a key answers epoch 0 and a
 // zero proof: it cannot rotate.
+//
+// SESSION_RESET asks a board to drop the session it holds and say hello again.
+// It is only ever sent sealed, gateway to board, under the session it ends, so a
+// board takes it only when it verifies under that session's K_down with a
+// counter greater than the last it accepted: it cannot be sent unsealed, under
+// another session, or replayed. A gateway sends it for a session it restored
+// after a restart, whose upward counter it can only place past a safety margin:
+// rather than leave the board unheard until its counter passes that mark, it
+// asks for a new session. Its payload is empty, or one reason byte:
+//
+//     SESSION_RESET  [reason(u8)]     1 = the gateway restarted
 enum MessageId {
     RELAYED = 19                    // 0x0013, both levels: a board's frame carried by a relay
     REKEY = 20                      // 0x0014, L2, sealed: the gateway gives a board its next key
     REKEY_ACK = 21                  // 0x0015, L2, sealed: the board proves it stored it
+    SESSION_RESET = 22              // 0x0016, L2, sealed: the gateway asks a board for a new session
     HELLO = 257                     // 0x0101, L2: a board announces itself
     ANNOUNCE = 257                  // 0x0101, L1: a gateway announces itself
     TELEMETRY = 513                 // 0x0201, L2: a board's reading

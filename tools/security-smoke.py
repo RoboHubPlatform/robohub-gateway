@@ -331,6 +331,9 @@ def main():
         os.remove(nodes)
         os.remove(sessions)
         proc = start(env)
+        # What the previous run sent down the link — its request for a new
+        # session to the board whose session it restored — is not this run's.
+        drain(master)
         first_relay = Board(k_gw)
         second_relay = Board(k_gw)
         status, _ = smoke.http("GET", f"/api/v1/nodes/{AREA}/11/diagnostics")

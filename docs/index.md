@@ -243,6 +243,21 @@ whenever one has moved 64 past what was last kept, and a restored session starts
 128 past the kept mark, so no frame recorded before a restart opens after it.
 Tags are compared in constant time.
 
+A board does not know the gateway restarted, and goes on counting under its
+session below that mark. So each restored session's board is asked, sealed under
+the restored session, for a new one (`SESSION_RESET`): on the serial link as soon
+as the link is open; for a board behind a relay (inside `RELAYED`) or on an uplink
+connection, on its first refused frame — one whose tag is the session's and whose
+counter is past the kept mark. The downward counter is restored past the same
+margin, so the board takes the request; it drops the session and says hello, and
+is heard at once. A request goes at most once in 10 s per session, five times in
+all, and each is logged (`session <sid> restored after restart: asked board <uid>
+to start a new session`). Once the board's new session carries a frame, the
+restored one is dropped. A board posted over HTTP is not asked: its next post
+under the restored session is refused, and it says hello again. A board needs a
+robohub-transport that knows `SESSION_RESET` to take the request; an older firmware ignores it and is heard again once its counter passes
+the mark.
+
 ## The telemetry outbox
 
 The gateway is also the edge recorder. Every accepted reading is normalized to
@@ -401,6 +416,13 @@ diagnostic and key rotation.
 `tools/security-smoke.py` checks the rules above: the manifest, announces,
 sessions bound to their link, replayed hellos, counters across a restart, frames
 posted over HTTP, sealed diagnostics, and relayed boards without a manifest.
+`tools/restart-smoke.py` checks a restart as the boards see it: the request
+for a new session on the serial link at open, sealed past the board's last
+downward counter; frames within the restored window and recorded before the
+restart refused; a board behind a relay asked inside `RELAYED` and one on an
+uplink connection asked on its new connection; the restored session dropped once
+the new one carries a frame; and — when `gateway_node` is built — the C host node
+heard again within seconds.
 `tools/rekey-smoke.py` checks key epochs: the grace epoch, `REKEY` and its proof,
 the old epoch refused after confirmation and another holder of it dropped, a board
 flashed at its current epoch, one too far behind, one that cannot rotate, a proof

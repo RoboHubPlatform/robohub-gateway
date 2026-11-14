@@ -174,11 +174,19 @@ fn background() void {
     gateway_udp_start()
     while true {
         if gateway_serial_start() {
+            // The link has just opened: a board that holds a session restored
+            // after a restart is asked for a new one at once
+            // (gateway/secure.rho, secure_serial_opened).
+            if gateway_state_get("secure.serial.open") == "" {
+                gateway_state_set("secure.serial.open", "1")
+                secure_serial_opened()
+            }
             let frame: string = gateway_serial_read(20)
             if strlen(frame) > 0 {
                 ingest_frame(frame)
             }
         } else {
+            gateway_state_set("secure.serial.open", "")
             rho_sleep_ms(20)
         }
         drain_uplink()
