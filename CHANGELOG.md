@@ -100,4 +100,6 @@ A session belongs to the link it was opened on; a replayed hello is refused; a l
 
 Board keys can be rotated. The manifest's epoch is the key a board should have: a board still on the one before is let in for a grace period and handed its new key (`REKEY`); its confirmation ends the old key, and drops any other session that still used it. A board that cannot store a key says so, and Mesh shows it. Status is in `rekey.txt` and `GET /api/v1/keys`. Diagnostics go to a board sealed under its session. A C relay on the serial link carries its boards end to end.
 
+## [0.7.1] - 2026-11-14
+
 After a restart the gateway asks each board whose session it restored to start a new one (`SESSION_RESET`): on the serial link as soon as it opens, through a relay or an uplink at the board's first refused frame. A board is heard again within a second instead of staying silent until its counter passes the restored mark; a frame recorded before the restart is still refused.
