@@ -83,22 +83,6 @@ fn device_form(body: string, name: string) string {
     return ""
 }
 
-fn device_json_string(value: string) string {
-    var out: string = "\""
-    var i: u32 = 0
-    let length: u32 = u32(strlen(value))
-    while i < length {
-        let ch: string = str_slice(value, i, 1)
-        if ch == "\"" || ch == "\\" {
-            out = out + "\\" + ch
-        } else {
-            out = out + ch
-        }
-        i = i + 1
-    }
-    return out + "\""
-}
-
 fn device_field_key(id: u32, field_name: string) string {
     return "device." + int_to_str(id) + "." + field_name
 }
@@ -160,14 +144,14 @@ fn device_register(req: Request) Response {
 
 fn device_one(id: u32) string {
     return "{\"id\":" + int_to_str(id) +
-        ",\"name\":" + device_json_string(gateway_state_get(device_field_key(id, "name"))) +
-        ",\"kind\":" + device_json_string(gateway_state_get(device_field_key(id, "kind"))) +
-        ",\"transport\":" + device_json_string(gateway_state_get(device_field_key(id, "transport"))) +
-        ",\"address\":" + device_json_string(gateway_state_get(device_field_key(id, "address"))) +
-        ",\"device_id\":" + device_json_string(gateway_state_get(device_field_key(id, "device_id"))) +
-        ",\"state\":" + device_json_string(gateway_state_get(device_field_key(id, "state"))) +
+        ",\"name\":" + json_string(gateway_state_get(device_field_key(id, "name"))) +
+        ",\"kind\":" + json_string(gateway_state_get(device_field_key(id, "kind"))) +
+        ",\"transport\":" + json_string(gateway_state_get(device_field_key(id, "transport"))) +
+        ",\"address\":" + json_string(gateway_state_get(device_field_key(id, "address"))) +
+        ",\"device_id\":" + json_string(gateway_state_get(device_field_key(id, "device_id"))) +
+        ",\"state\":" + json_string(gateway_state_get(device_field_key(id, "state"))) +
         ",\"power_w\":" + gateway_state_get(device_field_key(id, "power_w")) +
-        ",\"updated_ms\":" + device_json_string(gateway_state_get(device_field_key(id, "updated"))) + "}"
+        ",\"updated_ms\":" + json_string(gateway_state_get(device_field_key(id, "updated"))) + "}"
 }
 
 fn device_list(req: Request) Response {

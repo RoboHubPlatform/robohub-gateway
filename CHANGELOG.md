@@ -2,6 +2,10 @@
 
 All notable changes to this module are recorded here, one section per release.
 
+## [0.5.5] - 2026-11-14
+
+The unused generated `link/` and `uplink/` protocol copies are gone (only `wire/` is compiled); a device's JSON is written by `json_string`.
+
 ## [0.5.4] - 2026-11-14
 
 The protocol schemas are a copy of robohub-protocol 1.0.0 (robohub/protocol), written by its tools/sync.py; the generated Rho is unchanged.
