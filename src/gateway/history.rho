@@ -136,7 +136,7 @@ fn history_select(limit: u32) string {
     var rest: string = choices
     while rest != "" {
         let at: i32 = str_index_of(rest, " ")
-        let choice: string = ""
+        var choice: string = ""
         if at < 0 {
             choice = rest
             rest = ""

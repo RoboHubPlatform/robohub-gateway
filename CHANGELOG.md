@@ -103,3 +103,7 @@ Board keys can be rotated. The manifest's epoch is the key a board should have: 
 ## [0.7.1] - 2026-11-14
 
 After a restart the gateway asks each board whose session it restored to start a new one (`SESSION_RESET`): on the serial link as soon as it opens, through a relay or an uplink at the board's first refused frame. A board is heard again within a second instead of staying silent until its counter passes the restored mark; a frame recorded before the restart is still refused.
+
+## [0.7.2] - 2026-11-15
+
+Every `let` the code assigned to is declared with `var`, as rho 0.19.0 asks (assigning to a `let` is deprecated there and refused in the next minor release). Nothing else changes.

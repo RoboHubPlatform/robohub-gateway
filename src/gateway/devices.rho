@@ -219,7 +219,7 @@ fn devices_switch(req: Request) Response {
     if id == 0 || strlen(address) == 0 {
         return json(404, "{\"success\":false}")
     }
-    let on: string = "false"
+    var on: string = "false"
     if state == "on" {
         on = "true"
     }
