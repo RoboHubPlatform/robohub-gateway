@@ -78,6 +78,7 @@ fn relay_key() string {
     return key
 }
 
+// @req GW-0007, GW-LINK-0004
 fn relay_start() void {
     if !relay_enabled() {
         return
@@ -221,6 +222,7 @@ fn ignore_bool_relay(value: bool) void {
 
 // relay_answer carries a board's answer to a command the parent routed down,
 // with the parent's transaction id. It answers whether the answer was one.
+// @req GW-LINK-0004
 fn relay_answer(msg_id: u32, tx_id: u32, payload: string) bool {
     if tx_id == 0 || gateway_state_get_u32("relay.tx." + int_to_str(tx_id)) == 0 {
         return false
@@ -232,6 +234,7 @@ fn relay_answer(msg_id: u32, tx_id: u32, payload: string) bool {
 
 // relay_down passes a command from the parent on to the board it names: down
 // the child that owns its area, or on this gateway's own link.
+// @req GW-LINK-0004
 fn relay_down(frame: TransportFrame) void {
     var area: u32 = 0
     if frame.msg_id == MESSAGE_ID_CONTROL_REQUEST && control_request_valid(frame.payload) {
@@ -281,6 +284,7 @@ fn relay_foreign_hello(payload: string) bool {
 // relay_carries carries a frame from the serial link up whole when it is a
 // parent-planned board's — its hello, or a frame sealed under the session the
 // parent gave it — and answers whether it did.
+// @req GW-LINK-0005
 fn relay_carries(frame: TransportFrame) bool {
     if !relay_enabled() {
         return false
@@ -360,6 +364,7 @@ fn relay_apply(encoded: string) void {
 
 // relay_tick keeps the relay's session with its parent and drains what the
 // parent sent. The background loop calls it beside the uplink.
+// @req GW-LINK-0004
 fn relay_tick() void {
     if !relay_enabled() || relay_key() == "" {
         return

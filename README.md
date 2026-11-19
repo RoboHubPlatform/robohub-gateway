@@ -25,8 +25,8 @@ code is each without a rebuild:
 This service runs as the **`master`** of a mesh, or as a **`relay`** that reports
 through a parent's uplink, which is how meshes are linked. Relay mode, the
 uplink and its interface (`UPLINK_PORT`, `UPLINK_BIND`), the token scopes every
-route checks and serving HTTPS are described in [docs/index.md](docs/index.md);
-the full design is [docs/architecture.md](docs/architecture.md).
+route checks and serving HTTPS are described in [docs/doc/index.md](docs/doc/index.md);
+the full design is [docs/doc/architecture.md](docs/doc/architecture.md).
 
 ## Build and run
 
@@ -90,9 +90,12 @@ speaks for, how long it has been up, and how much it has carried.
 { "mode": "master", "area_id": 7, "uptime_ms": 186095, "devices_seen": 3, "frames": 412 }
 ```
 
-### `GET /api/v1/nodes/{area}/{node}/diagnostics`
+### `POST /api/v1/nodes/{area}/{node}/diagnostics`
 
-Asks one device to run its hardware smoke and records the answer. The gateway
+Asks one device to run its hardware smoke and records the answer. Running the
+smoke drives the board's hardware, so it is an action: a `POST`, and it needs
+the `gateway:<id>:command` scope, as switching does. (It was a `GET` under the
+read scope before 0.7.3.) The gateway
 sends a `DIAG_REQUEST` (`0x0401`) for every probe, and the device answers with
 the runtime's counters and two masks: the probes that passed and the probes that
 failed. A probe in neither mask is **absent** — the board has no such device,
@@ -120,7 +123,7 @@ A gateway can report through a parent (`GATEWAY_MODE=relay`, `PARENT_UPLINK`)
 and can listen for the gateways and Wi-Fi boards below it (`UPLINK_PORT`,
 confined to one interface with `UPLINK_BIND`, bounded by `UPLINK_MAX_CONNECTIONS`
 and `UPLINK_IDLE_TIMEOUT_S`). Both, and how a command is routed
-down by area, are in [docs/index.md](docs/index.md#relay-mode).
+down by area, are in [docs/doc/index.md](docs/doc/index.md#relay-mode).
 
 ### The whole tree on one machine
 
@@ -315,7 +318,7 @@ The gateway runs, and the tree around it runs with it.
 
 On hardware, the node, edge and relay firmwares build for `pico2w`; the relay
 streams a downstream board and routes a command down to it. The full design is
-[docs/architecture.md](docs/architecture.md).
+[docs/doc/architecture.md](docs/doc/architecture.md).
 
 ## Deployment
 
@@ -326,7 +329,7 @@ deployed:
 rho deploy -target container -docker -build-only
 ```
 
-[docs/deployment.md](docs/deployment.md) covers the modes, the second (uplink)
+[docs/doc/deployment.md](docs/doc/deployment.md) covers the modes, the second (uplink)
 port that is not HTTP, running a gateway with a board wired to it, and verifying
 a deployment.
 
@@ -377,8 +380,10 @@ aggregator reads the outbox, which holds normalized readings rather than frames:
 
 - `GET /api/v1/telemetry/outbox?after=<seq>&limit=<n>` — readings after a
   sequence, at most `limit` (default 500).
-- `POST /api/v1/telemetry/ack` with `{"seq": n}` — what the aggregator has
-  committed; the gateway prunes it and keeps the floor across a restart.
+- `POST /api/v1/telemetry/ack` with `{"seq": n}` — what this consumer has
+  committed, kept as its own cursor; the gateway prunes what every known
+  consumer has acknowledged and keeps the floor across a restart. It takes
+  `gateway:<id>:ack` (a collector holds `read` and `ack`).
 - `GET /api/v1/telemetry/outbox/status` — `path`, `depth`, `base_seq`,
   `last_seq`, `dropped`.
 
@@ -391,7 +396,8 @@ below, has none. The generated node firmware writes a module field as
 `<tag>.<field>`, the tag being the start of the module's own id (firmware built
 before that wrote `m<index>.<field>`); the live page lists those in its
 `sensors` object and the frames history. Reading it takes a token with
-`gateway:<id>:read`, and `OUTBOX_MAX_ROWS` bounds what waits for an aggregator.
+`gateway:<id>:read`, and `OUTBOX_MAX_ROWS` bounds what waits for an aggregator
+(the oldest are dropped past it; nothing is dropped by age).
 
 ## Authenticated frames
 
@@ -412,15 +418,17 @@ sessions it holds; a board's readings are taken for its own area and node only; 
 relay announces and carries readings only for its own areas, and no one announces
 the gateway's own area. Sessions are bound to the link they were opened on, a
 recorded hello is not answered again, and counters are kept so that no frame
-recorded before a restart opens after it. See
-[docs/index.md](docs/index.md#the-node-manifest).
+recorded before a restart opens after it. After a restart each board with a
+restored session is asked for a new one (`SESSION_RESET`), at most once in 10 s
+and five times per session; past that the gateway stops asking. See
+[docs/doc/index.md](docs/doc/index.md#the-node-manifest).
 
 A board's key can be rotated without reflashing it: the manifest names the key
 epoch each board should be at, a board in the epoch before it is sent its new key
 (`REKEY`, sealed under its session), and once it proves it stored it the old key
 opens nothing. What happened is written to `rekey.txt` beside the manifest and
 served at `GET /api/v1/keys`. See
-[docs/index.md](docs/index.md#key-epochs-and-rotation).
+[docs/doc/index.md](docs/doc/index.md#key-epochs-and-rotation).
 
 The uplink is authenticated the same way. Whoever dials in — a board on Wi-Fi, or
 a relay below this gateway — says hello on its connection and is answered on it,
@@ -429,7 +437,7 @@ a relay is sealed under the session its connection opened. A plain frame on the
 uplink is always dropped, whatever `ALLOW_PLAIN_FRAMES` says. A board behind a
 relay that holds no key of its own — the C relay — is authenticated with its own
 key: the relay carries its frames whole in `RELAYED`, and commands for it go down
-the same way, routed per board session ([docs/index.md](docs/index.md#boards-behind-a-relay-relayed)).
+the same way, routed per board session ([docs/doc/index.md](docs/doc/index.md#boards-behind-a-relay-relayed)).
 `POST /api/v1/frames` takes only a board's sealed frames under a session opened
 there (its hello is answered in the response), never a plain frame. A sensor reading that comes up the
 uplink is the connected board's own and is kept under its id; what a relay
@@ -439,9 +447,11 @@ loop, so a session is answered while the other end waits for it.
 ## Access and TLS
 
 Every route but `/healthz` takes a short-lived keeper token whose scopes name
-this gateway (`gateway:<id>:read`, `gateway:<id>:command`); there is no static
-token. With `RHO_TLS_CERT` and `RHO_TLS_KEY` set, the API is served over HTTPS.
-See [docs/index.md](docs/index.md#access).
+this gateway (`gateway:<id>:read`, `gateway:<id>:ack`, `gateway:<id>:command`); there is no static
+token. With `RHO_TLS_CERT` and `RHO_TLS_KEY` set, the API is served over HTTPS
+only; with one of them set, or a pair that cannot be loaded, the gateway does not
+start. `tools/access-smoke.py` checks both.
+See [docs/doc/index.md](docs/doc/index.md#access).
 
 ## License
 

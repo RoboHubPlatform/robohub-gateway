@@ -1,0 +1,101 @@
+# The links frames arrive on and leave by: the serial link, the uplink a relay
+# or a board on Wi-Fi dials, relay mode, boards carried inside RELAYED, and the
+# HTTP frame bridge (src/main.rho, gateway/state.rho, relay.rho, relayed.rho,
+# and the `gateway` port in rho-robohub). Proposed until the maintainer
+# approves them.
+level: SUB
+prefix: GW-LINK
+title: Gateway links
+requirements:
+  - id: GW-LINK-0001
+    title: The serial link is opened when it appears and when it comes back
+    statement: >
+      The gateway shall open the serial link named by SERIAL_PORT once it exists,
+      also when it did not exist at start, and open it again when it disappears
+      and comes back, trying at most every 2 s, while its HTTP API keeps
+      answering.
+    rationale: A board on USB that resets re-enumerates; ingest must not stop for good.
+    satisfies: [GW-0001]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [links, serial, recovery]
+
+  - id: GW-LINK-0002
+    title: The uplink is bounded
+    statement: >
+      With UPLINK_PORT set the gateway shall listen for TCP connections on
+      UPLINK_BIND (by default the host of RHO_HTTP_ADDR, else every interface),
+      hold at most UPLINK_MAX_CONNECTIONS (32) at once, and close a connection
+      silent for UPLINK_IDLE_TIMEOUT_S (300 s) or sending 4 KiB without a frame
+      delimiter.
+    rationale: Whatever dials in from a network must not exhaust the gateway.
+    satisfies: [GW-0007]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [links, uplink, limits]
+
+  - id: GW-LINK-0003
+    title: A child's announce routes its area's commands down
+    statement: >
+      An accepted announce shall bind the child gateway's area to the uplink
+      connection it came on, and a command for a device in that area shall be
+      sent down that connection sealed under the child's session and answered
+      202 with its transaction id.
+    rationale: Commands follow the way the readings came up.
+    satisfies: [GW-0006, GW-0007]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [links, uplink, commands]
+
+  - id: GW-LINK-0004
+    title: Relay mode reports through the parent as one of its boards
+    statement: >
+      With GATEWAY_MODE=relay the gateway shall dial PARENT_UPLINK, open a session
+      as the board RELAY_UID with the key in RELAY_KEY_FILE, asking again every
+      5 s until it has one, announce its area, carry its boards' readings up under
+      that session, and pass a command the parent routes to its area on to the
+      board, answering with the parent's transaction id.
+    rationale: The parent needs nothing new to authenticate a relay: it derives its key as for any board.
+    satisfies: [GW-0007]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [links, relay]
+
+  - id: GW-LINK-0005
+    title: Boards behind a relay are authenticated end to end
+    statement: >
+      A frame a relay carries inside RELAYED shall be opened with the board's own
+      key, under a session held to that relay and port, its reading kept under
+      the board's id and taken only for an area the relay may speak for, and
+      everything sent to the board shall go back inside RELAYED.
+    rationale: A relay can drop or delay a board's frame but must not forge, change or move one.
+    satisfies: [GW-0001, GW-0007]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [links, relay, security]
+
+  - id: GW-LINK-0006
+    title: A network bridge posts a board's frames over HTTP
+    statement: >
+      POST /api/v1/frames shall take one encoded frame from a caller holding the
+      command scope, answer a hello with the SESSION frame in the response and
+      never on the serial link, take a frame sealed under a session opened this
+      way, and refuse with 403 a plain frame or one sealed under another link's
+      session.
+    rationale: An IP device behind a poller is held to the same rules as a board on a network link.
+    satisfies: [GW-0001]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [links, http, security]

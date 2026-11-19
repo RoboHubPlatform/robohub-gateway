@@ -65,6 +65,7 @@ fn history_size() u32 {
 
 // history_record appends one frame. `kind` says which message it was; `detail`
 // carries the power or state fields as the JSON already rendered for the API.
+// @req GW-TEL-0005
 fn history_record(kind: string, key: u32, timestamp: u32, temperature: f32,
                   status: u32, detail: string) void {
     let next: u32 = gateway_state_get_u32("history.next")
@@ -174,6 +175,7 @@ fn csv_field(value: string) string {
     return "\"" + out + "\""
 }
 
+// @req GW-TEL-0005
 fn history_csv(limit: u32) string {
     var body: string = "timestamp_ms,received_at_ms,kind,area_id,node_id,temperature_c,status,detail\n"
     let shown: u32 = history_shown(limit)

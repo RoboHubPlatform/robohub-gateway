@@ -371,7 +371,7 @@ def diagnostic(wire: Wire, board: Board, area: int, node: int):
 
     t = threading.Thread(target=responder)
     t.start()
-    status, _ = smoke.http("GET", f"/api/v1/nodes/{area}/{node}/diagnostics")
+    status, _ = smoke.http("POST", f"/api/v1/nodes/{area}/{node}/diagnostics")
     t.join(timeout=6)
     return status, seen.get("inner")
 

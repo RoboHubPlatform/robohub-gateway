@@ -1,0 +1,125 @@
+# What an accepted reading becomes: an outbox record for Mesh, the latest value
+# per device, a row of the frame history and a datagram for a collector
+# (src/gateway/outbox.rho, stream.rho, history.rho, devices.rho, and the
+# outbox in rho-robohub's `gateway` port). Proposed until the maintainer
+# approves them.
+level: SUB
+prefix: GW-TEL
+title: Gateway telemetry
+requirements:
+  - id: GW-TEL-0001
+    title: A reading becomes one outbox record per signal
+    statement: >
+      Each accepted reading shall be appended as one record per signal,
+      `{seq, source, area_id, node_id, field, value, status, received_ms}`, with
+      `source` the id of the board whose session carried it (empty for a plain
+      frame or one a gateway below carried) and `received_ms` the gateway's wall
+      clock.
+    rationale: Mesh keeps a reading under its board, whatever area and node it reports, and a node's own timestamp is its uptime.
+    satisfies: [GW-0005]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [telemetry, outbox]
+
+  - id: GW-TEL-0002
+    title: The outbox sequence never goes back
+    statement: >
+      The outbox sequence shall continue across a restart, including after the
+      outbox was emptied, and the file shall be synced at least every 2 s.
+    rationale: Mesh stores what it has committed by sequence; a reused number would be skipped as already stored.
+    satisfies: [GW-0005]
+    decided_by: [ADR-0004]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [telemetry, outbox, durability]
+
+  - id: GW-TEL-0003
+    title: Each consumer pulls and acknowledges on its own cursor
+    statement: >
+      GET /api/v1/telemetry/outbox shall answer the records after `after`, at most
+      `limit` (500 when not given); POST /api/v1/telemetry/ack, under the
+      `gateway:<id>:ack` scope, shall record the
+      sequence under the caller's token subject and remove only records every
+      known consumer has acknowledged; when more than OUTBOX_MAX_ROWS records are
+      kept the oldest shall be dropped and counted in the outbox status.
+    rationale: A second reader — a backup, a debugger — must not delete what Mesh has not stored, and a collector that stops must not fill the disk.
+    satisfies: [GW-0005]
+    decided_by: [ADR-0004]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [telemetry, outbox]
+
+  - id: GW-TEL-0004
+    title: Devices are told apart by area and node
+    statement: >
+      The gateway shall key every device's latest values by its area and node, so
+      that two boards with the same node id in different areas are two devices.
+    rationale: A tree of gateways has several areas, and a node id is unique only within its own.
+    satisfies: [GW-0014]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [telemetry]
+
+  - id: GW-TEL-0005
+    title: The last 1000 frames are kept as a history
+    statement: >
+      The gateway shall keep the last 1000 frames, newest first, show a window of
+      10, 25, 50, 100, 500 or 1000 of them with the gateway's wall-clock receive
+      time beside the node's own timestamp, and export the same window as CSV.
+    rationale: Bringing up a board needs its recent frames; an unbounded log in memory does not.
+    satisfies: [GW-0011]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [history, observability]
+
+  - id: GW-TEL-0006
+    title: Each reading is streamed to a UDP collector
+    statement: >
+      Each valid telemetry, power or state reading shall be sent as one JSON
+      datagram naming its area and node to PLOTJUGGLER_ADDR (by default
+      127.0.0.1:9870).
+    rationale: A plotting tool watches a board live without touching the API.
+    satisfies: [GW-0011]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [observability]
+
+  - id: GW-TEL-0007
+    title: A network device is registered once and polled over HTTP
+    statement: >
+      POST /api/v1/devices shall register a device under its device_id, or
+      `transport:address` when none is given, and refuse a second registration of
+      the same id with 409; polling and switching an HTTP device shall wait at
+      most 3000 ms for it, answer 502 when it does not answer, and append the
+      `state` it reports and its `power_w` to the outbox under the gateway's area
+      (GW-TEL-0008).
+    rationale: One device must be one series, and a dead plug must not hold a request.
+    satisfies: [GW-0010]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [devices, outbox]
+
+  - id: GW-TEL-0008
+    title: A switch is recorded as the device reports it
+    statement: "Switching an HTTP device shall read the device's status after the command and record the state it reports: 200 with confirmed true when it reports the requested state, 502 with that state recorded when it reports the other, and 202 with confirmed false, the request kept as requested and the last reported state unchanged when it gives no status; a board's switch shall answer the state its acknowledgement carries and whether it is the one requested, and a switch routed to a child gateway shall answer 202 with state pending."
+    rationale: A page must never claim a heater is off when it is not; the gateway is where the device's answer is first heard.
+    satisfies: [GW-0010]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [devices, outputs]

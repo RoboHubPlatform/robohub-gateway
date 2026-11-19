@@ -1,0 +1,99 @@
+{
+  "about": "Known-answer vectors for robohub-transport's sealed frames (include/robohub/secure.h). Written once by tests/vectors/generate.py, an independent transcription of the protocol; the board (tests/test_vectors.c) and robohub-gateway (tools/vectors-smoke.py) are each checked against it byte for byte. All byte strings are lowercase hex; a frame is the whole encoded frame, COBS and the closing 0x00 included.",
+  "version": 1,
+  "keys": {
+    "k_gw": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "uid": "e661410403626a2b",
+    "k_dev_epoch0": "ed4c2b54a6e204b7a4ac7ed9b760ef37",
+    "k_dev_epoch1": "dbac4e5c45a544bce78b48b19761efee",
+    "k_dev_epoch2": "2b6844ef1db748353c9e762d681259d1"
+  },
+  "placement": {
+    "area": 7,
+    "node": 11
+  },
+  "hello": {
+    "epoch": 0,
+    "nonce_b": "b0b1b2b3b4b5b6b7",
+    "payload": "e661410403626a2bb0b1b2b3b4b5b6b7368336d8d9f57aaf",
+    "frame": "0211010102181be661410403626a2bb0b1b2b3b4b5b6b7368336d8d9f57aaf169e00"
+  },
+  "hello_epoch1": {
+    "epoch": 1,
+    "nonce_b": "c0c1c2c3c4c5c6c7",
+    "payload": "e661410403626a2bc0c1c2c3c4c5c6c7812aa4be1bfbe8d1",
+    "frame": "0211010102181be661410403626a2bc0c1c2c3c4c5c6c7812aa4be1bfbe8d1b4f700"
+  },
+  "session": {
+    "sid": 4660,
+    "sid_bytes": "3412",
+    "nonce_g": "0908070605040302",
+    "lifetime_s": 3600,
+    "payload": "e661410403626a2b34120908070605040302100e30eeae39d7d2b38c",
+    "frame": "02120101021c1fe661410403626a2b34120908070605040302100e30eeae39d7d2b38c394d00",
+    "k_up": "063e5528855ebeb8848b586f6da2dc78",
+    "k_down": "76a58e5159905c42ebaebe9b1a76c349",
+    "stored_up": 100,
+    "stored_down": 100
+  },
+  "session_reset": {
+    "msg_id": 22,
+    "wire_msg_id": 32790,
+    "tx_id": 0,
+    "counter": 229,
+    "inner": "01",
+    "payload": "3412e500000001b31d32b6f47e5917",
+    "frame": "03168001020f043412e501010c01b31d32b6f47e591770dc00"
+  },
+  "rekey": {
+    "msg_id": 20,
+    "wire_msg_id": 32788,
+    "tx_id": 0,
+    "counter": 230,
+    "inner": "01000000f1d0e0c2f3f0f042bfa39ff227c8f942",
+    "payload": "3412e600000001000000f1d0e0c2f3f0f042bfa39ff227c8f942afb3732965d13a75",
+    "frame": "031480010222043412e60101020101011bf1d0e0c2f3f0f042bfa39ff227c8f942afb3732965d13a756cd700",
+    "epoch": 1,
+    "mask": "2a7cae9eb655b4fe5828d743b0a916ac"
+  },
+  "control": {
+    "msg_id": 769,
+    "wire_msg_id": 33537,
+    "tx_id": 1,
+    "counter": 231,
+    "inner": "010107000b000100fa000000",
+    "payload": "3412e7000000010107000b000100fa0000004cd4f4de65364628",
+    "frame": "04018301021a043412e7010104010107020b020102fa01010b4cd4f4de65364628dc3600"
+  },
+  "reading": {
+    "msg_id": 513,
+    "wire_msg_id": 33281,
+    "tx_id": 0,
+    "counter": 300,
+    "inner": "010107000b00e80300000000ac4100000000",
+    "payload": "34122c010000010107000b00e80300000000ac4100000000b17ec183ad7f5c49",
+    "frame": "0301820102200534122c010104010107020b03e80301010103ac410101010bb17ec183ad7f5c494d9a00",
+    "temperature_c": 21.5
+  },
+  "rekey_ack": {
+    "msg_id": 21,
+    "wire_msg_id": 32789,
+    "tx_id": 0,
+    "counter": 301,
+    "inner": "010000008b4231d78e43d85c",
+    "payload": "34122d010000010000008b4231d78e43d85c1b1e74c6c1c6faee",
+    "frame": "03158001021a0534122d010102010101138b4231d78e43d85c1b1e74c6c1c6faeee99900",
+    "epoch": 1,
+    "proof": "8b4231d78e43d85c"
+  },
+  "control_ack": {
+    "msg_id": 770,
+    "wire_msg_id": 33538,
+    "tx_id": 1,
+    "counter": 302,
+    "inner": "010107000b0001000000f0000000",
+    "payload": "34122e010000010107000b0001000000f0000000580e10aed4c89a25",
+    "frame": "04028301021c0534122e010104010107020b0201010102f001010b580e10aed4c89a25a0db00",
+    "actual": 240
+  }
+}

@@ -1,0 +1,11 @@
+# Who reviews what. RoboHub has one maintainer for now, who reviews every change.
+# The lines after the first say where that review is the point of the process:
+# requirements, architecture decisions and what a module says about itself.
+# With branch protection requiring code-owner review, a pull request touching
+# these cannot be merged without it.
+*                     @miraur
+/docs/requirements/   @miraur
+/docs/architecture/   @miraur
+module.yml            @miraur
+/MAINTAINERS.yml      @miraur
+/.github/             @miraur

@@ -336,7 +336,7 @@ def main():
         drain(master)
         first_relay = Board(k_gw)
         second_relay = Board(k_gw)
-        status, _ = smoke.http("GET", f"/api/v1/nodes/{AREA}/11/diagnostics")
+        status, _ = smoke.http("POST", f"/api/v1/nodes/{AREA}/11/diagnostics")
         check(status == 409 and not _serial_has_frame(master),
               f"a diagnostic for a board with no session is refused, and nothing is written ({status})")
         a = socket.create_connection((HOST, UPLINK_PORT), timeout=5)
@@ -407,7 +407,7 @@ def diag_exchange(master: int, area: int, node: int, answer: Board):
 
     t = threading.Thread(target=responder)
     t.start()
-    status, _ = smoke.http("GET", f"/api/v1/nodes/{area}/{node}/diagnostics")
+    status, _ = smoke.http("POST", f"/api/v1/nodes/{area}/{node}/diagnostics")
     t.join(timeout=5)
     if seen.get("msg_id") != 0x8401:
         return status, None

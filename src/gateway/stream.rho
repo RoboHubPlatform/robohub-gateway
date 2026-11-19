@@ -22,6 +22,7 @@ module gateway.stream
 
 // device_key packs an area and a node into the one number the port's device set
 // holds: the area in the high half, the node in the low.
+// @req GW-TEL-0004
 fn device_key(area: u32, node: u32) u32 {
     return (area << 16) | (node & 0xFFFF)
 }
@@ -71,6 +72,7 @@ fn handle_reading(source: string, payload: string) void {
 
 // record_reading is what a reading from either level becomes: the device's
 // newest values, and one line for the collector.
+// @req GW-0014
 fn record_reading(source: string, area: u32, node: u32, timestamp: u32, temperature: f32, status: u32) void {
     let key: u32 = device_key(area, node)
 
@@ -98,6 +100,7 @@ fn record_reading(source: string, area: u32, node: u32, timestamp: u32, temperat
 // stream_publish renders one PlotJuggler record and sends it. The device — its
 // area and its node — is part of the record so a plot of several boards over
 // several areas can be told apart.
+// @req GW-TEL-0006
 fn stream_publish(key: u32, timestamp: u32, temperature: f32, status: u32) bool {
     let line: string = "{\"area_id\":" + int_to_str(device_area(key)) +
         ",\"node_id\":" + int_to_str(device_node(key)) +
@@ -179,6 +182,7 @@ fn record_power(source: string, message: PowerReading) void {
 // stream_publish_power renders one PlotJuggler record for a power device. It is
 // its own record shape because the fields are its own; a plot selects the ones
 // it wants by name.
+// @req GW-TEL-0006
 fn stream_publish_power(key: u32, message: PowerReading) bool {
     let line: string = "{\"area_id\":" + int_to_str(device_area(key)) +
         ",\"node_id\":" + int_to_str(device_node(key)) +
@@ -239,6 +243,7 @@ fn record_state(source: string, message: StateReading) void {
 }
 
 // stream_publish_state renders one PlotJuggler record for a device's state.
+// @req GW-TEL-0006
 fn stream_publish_state(key: u32, message: StateReading) bool {
     let line: string = "{\"area_id\":" + int_to_str(device_area(key)) +
         ",\"node_id\":" + int_to_str(device_node(key)) +

@@ -120,6 +120,7 @@ fn secure_tag(key_hex: string, message_hex: string) string {
 // secure_equal compares two tags without stopping at the first difference, so
 // the time a comparison takes does not say how much of a forged tag was right.
 // The lengths are not secret; a tag is always 16 hex digits.
+// @req GW-SEC-0002
 fn secure_equal(a: string, b: string) bool {
     if strlen(a) != strlen(b) {
         return false
@@ -133,6 +134,7 @@ fn secure_equal(a: string, b: string) bool {
     return difference == 0
 }
 
+// @req GW-SEC-0001
 fn secure_gateway_key() string {
     let cached: string = gateway_state_get("secure.k_gw")
     if cached != "" {
@@ -155,10 +157,12 @@ fn secure_gateway_key() string {
 
 // secure_plain_allowed is whether a plain frame is accepted: only when the
 // deployment says so for a migration.
+// @req GW-SEC-0006
 fn secure_plain_allowed() bool {
     return getenv("ALLOW_PLAIN_FRAMES") == "1"
 }
 
+// @req GW-SEC-0001, GW-0012
 fn secure_device_key(uid_hex: string) string {
     return str_slice(rho_hmac_sha256_hex(secure_gateway_key(), SECURE_LABEL_DEV + uid_hex), 0, 32)
 }
@@ -166,6 +170,7 @@ fn secure_device_key(uid_hex: string) string {
 // secure_now_s is the wall clock: a session's expiry stays right across a
 // restart, which a store of sessions needs, and does not wrap after 49 days of
 // uptime as the millisecond uptime counter does.
+// @req GW-SEC-0003
 fn secure_now_s() u32 {
     return rho_now_s()
 }
@@ -302,6 +307,7 @@ fn secure_drop_session(sid: string) void {
 // when a session opens and when a counter has moved SECURE_STORE_EVERY past what
 // was last kept, so a restart loses neither the sessions nor the counters'
 // high-water marks.
+// @req GW-SEC-0012, GW-0012
 fn secure_store() void {
     let path: string = secure_store_path()
     if path == "" {
@@ -374,6 +380,7 @@ fn secure_store() void {
 // the last mark, so what was used before the restart is below the kept mark plus
 // SECURE_STORE_EVERY; each starts at twice that past the mark, which leaves no
 // frame recorded before the restart that could be replayed after it.
+// @req GW-0004, GW-SEC-0012
 fn secure_restore() u32 {
     let path: string = secure_store_path()
     if path == "" {
@@ -460,11 +467,13 @@ fn secure_restore() u32 {
 // secure_hello_seen is whether a board has said hello with this nonce before:
 // a recorded hello, sent again. Its latest SECURE_NONCES_KEPT nonces are
 // remembered, and kept with the sessions across a restart.
+// @req GW-SEC-0004
 fn secure_hello_seen(uid: string, nonce_b: string) bool {
     return secure_list_has("," + gateway_state_get("secure.nonces." + uid), nonce_b)
 }
 
 // secure_hello_remember records a nonce a board's hello was answered for.
+// @req GW-SEC-0004
 fn secure_hello_remember(uid: string, nonce_b: string) void {
     var nonces: string = gateway_state_get("secure.nonces." + uid) + nonce_b + ","
     // Each nonce is 16 hex digits and a comma.
@@ -515,6 +524,7 @@ fn secure_accept_hello(payload: string) string {
 // `<sid>|<session payload>`: the answer's bytes, for a caller that frames it
 // itself — inside a RELAYED message, for a board behind a relay. "" when the
 // hello is not answered.
+// @req GW-0001, GW-SEC-0001, GW-SEC-0003, GW-SEC-0004, GW-SEC-0007
 fn secure_accept_hello_answer(payload: string) string {
     if strlen(payload) != 24 {
         return ""
@@ -620,6 +630,7 @@ fn secure_accept_hello_answer(payload: string) string {
 // under once a frame sealed under it has come up — so a hello replayed onto the
 // link cannot take the link from the board that holds it — or at once when the
 // link holds no live session.
+// @req GW-SEC-0005
 fn secure_handle_hello(payload: string) void {
     let accepted: string = secure_accept_hello(payload)
     if accepted == "" {
@@ -642,6 +653,7 @@ fn secure_handle_hello(payload: string) void {
 // secure_handle_uplink_hello answers a hello that came up an uplink connection —
 // a board on Wi-Fi, or a relay below this gateway — on that connection, and
 // remembers which session the connection holds.
+// @req GW-SEC-0005
 fn secure_handle_uplink_hello(payload: string, connection: u32) void {
     let accepted: string = secure_accept_hello(payload)
     if accepted == "" {
@@ -687,6 +699,7 @@ fn secure_refused() TransportFrame {
 // a session is bound to its connection), the counter greater than the last
 // accepted, and the tag the session's. The frame handed on carries the message
 // id without the flag and the payload inside.
+// @req GW-0001, GW-SEC-0002
 fn secure_open(frame: TransportFrame, bound: string, also: string) TransportFrame {
     let payload: string = frame.payload
     if strlen(payload) < 14 {
@@ -745,6 +758,7 @@ fn secure_open(frame: TransportFrame, bound: string, also: string) TransportFram
 
 // secure_tag_ok is whether a sealed frame's tag is the one the session's upward
 // key makes for it.
+// @req GW-SEC-0002
 fn secure_tag_ok(frame: TransportFrame, record: string) bool {
     let payload: string = frame.payload
     if strlen(payload) < 14 {
@@ -785,6 +799,7 @@ fn secure_restored_window(frame: TransportFrame, sid: string, record: string, co
 // is its board going on under a session restored after a restart: the session
 // was held to a connection the restart closed, so no connection holds it now.
 // The board is asked for a new session on the connection the frame came on.
+// @req GW-SEC-0013
 fn secure_restored_elsewhere(frame: TransportFrame, connection: u32) void {
     let sid: string = secure_frame_sid(frame)
     if !secure_restored(sid) || secure_sid_link(sid) != "" || strlen(frame.payload) < 14 {
@@ -806,6 +821,7 @@ fn secure_restored_elsewhere(frame: TransportFrame, connection: u32) void {
 // link it is held to — the serial link, or inside RELAYED through the relay a
 // board is behind — or, when connection is not 0, on that uplink connection. At
 // most once in SECURE_RESET_RETRY_S, SECURE_RESET_TRIES times, per session.
+// @req GW-SEC-0013
 fn secure_reset_restored(sid: string, connection: u32) bool {
     if !secure_restored(sid) || !secure_live(sid) {
         return false
@@ -840,6 +856,7 @@ fn secure_reset_restored(sid: string, connection: u32) bool {
 
 // secure_serial_opened asks every board that holds a restored session on the
 // serial link for a new one, as soon as the link is open.
+// @req GW-SEC-0013
 fn secure_serial_opened() void {
     var rest: string = gateway_state_get("secure.sids")
     while rest != "" {
@@ -862,6 +879,7 @@ fn ignore_bool_secure(value: bool) void {
 
 // secure_drop_restored drops a board's restored sessions once a new session of
 // its, sid, has carried a frame.
+// @req GW-SEC-0013
 fn secure_drop_restored(uid: string, sid: string) void {
     gateway_state_set("secure.uid." + uid + ".restored", "")
     var dropped: bool = false
@@ -889,6 +907,7 @@ fn secure_drop_restored(uid: string, sid: string) void {
 // secure_open_serial opens a frame from the serial link, under the session the
 // link holds or the one a hello on it has just opened; the first frame under the
 // new one makes it the link's.
+// @req GW-SEC-0005
 fn secure_open_serial(frame: TransportFrame) TransportFrame {
     let pending: string = gateway_state_get("secure.serial.pending")
     // Another board on the same serial bus holds its own session on the link.
@@ -908,6 +927,7 @@ fn secure_open_serial(frame: TransportFrame) TransportFrame {
 
 // secure_open_uplink opens a frame from one uplink connection, under the session
 // that connection opened and no other.
+// @req GW-SEC-0005
 fn secure_open_uplink(frame: TransportFrame, connection: u32) TransportFrame {
     let bound: string = gateway_state_get("secure.conn." + int_to_str(connection) + ".sid")
     if bound == "" || secure_frame_sid(frame) != bound {

@@ -221,6 +221,7 @@ fn manifest_load(path: string, text: string) void {
 // manifest_refresh reads the manifest when it has changed, at most every
 // MANIFEST_CHECK_MS unless forced, and takes away from the boards it no longer
 // accepts the sessions and routes they held.
+// @req GW-SEC-0007
 fn manifest_refresh(force: bool) void {
     let now: u32 = gateway_now_ms()
     if !force && gateway_state_get("manifest.checked") == "1" &&
@@ -258,6 +259,7 @@ fn manifest_refresh(force: bool) void {
 // manifest_enforce drops every live session whose board the manifest no longer
 // accepts, and every route a relay announced for an area it may no longer speak
 // for.
+// @req GW-0002, GW-SEC-0007, GW-SEC-0009
 fn manifest_enforce() void {
     var dropped: u32 = 0
     var rest: string = gateway_state_get("secure.sids")
@@ -325,6 +327,7 @@ fn manifest_epoch(uid: string) u32 {
 
 // manifest_refusal is why the manifest does not accept a board — not listed, or
 // revoked — or "" when it does, or when there is no manifest.
+// @req GW-SEC-0007
 fn manifest_refusal(uid: string) string {
     if !manifest_present() {
         return ""
@@ -390,6 +393,7 @@ fn manifest_reading_refusal(sid: string, area: u32, node: u32) string {
 // manifest_reading_allowed judges a reading by the device it names — every
 // reading starts with its version byte and the device's (version, area, node) —
 // and says a refusal once an hour per board.
+// @req GW-0002, GW-SEC-0008
 fn manifest_reading_allowed(sid: string, payload: string) bool {
     if sid == "" || strlen(payload) < 6 {
         return true
@@ -411,6 +415,7 @@ fn manifest_reading_allowed(sid: string, payload: string) bool {
 // taken, or "" when it is: never for this gateway's own area; with a manifest,
 // only from a relay and only for its areas; without one, not for an area or a
 // gateway id that another board's live session already holds.
+// @req GW-SEC-0008
 fn manifest_announce_refusal(sid: string, announce: Announce) string {
     let area: u32 = u32(announce.area_id)
     if area == gateway_area() {
@@ -499,6 +504,7 @@ fn manifest_relayed_hello_refusal(relay_uid: string, uid: string) string {
 // directly does), and the relay that carried it must speak for that area — with
 // a manifest, its own area or its areas; without one, the areas it announced,
 // when it announced any.
+// @req GW-LINK-0005
 fn manifest_relayed_reading_allowed(relay_sid: string, sid: string, payload: string) bool {
     if strlen(payload) < 6 {
         return false

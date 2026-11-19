@@ -1,0 +1,222 @@
+# Sessions, sealed frames, the node manifest and key epochs: the gateway's half
+# of robohub-transport's secure link (src/gateway/secure.rho, manifest.rho,
+# keys.rho). Proposed until the maintainer approves them.
+level: SUB
+prefix: GW-SEC
+title: Gateway security
+requirements:
+  - id: GW-SEC-0001
+    title: Board keys are derived from the gateway key
+    statement: >
+      The gateway shall derive a board's epoch-0 key as
+      HMAC-SHA256(K_gw, "rh-dev1" ‖ uid)[0:16] from the 64-hex-digit key in
+      GATEWAY_KEY_FILE, and when that file holds no such key shall answer no
+      hello and say so once in its log.
+    rationale: No board key is stored or sent; a missing key is why a sealed board goes unheard, and must be visible.
+    satisfies: [GW-0001, GW-0012]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, keys]
+
+  - id: GW-SEC-0002
+    title: A sealed frame opens only under its own session
+    statement: >
+      The gateway shall drop a sealed frame whose session is unknown or expired,
+      is not one the link it arrived on holds, whose counter is not greater than
+      the last accepted in that session, or whose tag does not match, comparing
+      tags in constant time.
+    rationale: Authenticity, integrity and replay protection are these four checks.
+    satisfies: [GW-0001]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, sessions]
+
+  - id: GW-SEC-0003
+    title: Sessions last an hour and never share an id
+    statement: >
+      A session shall last 3600 s reckoned on the wall clock, and the gateway
+      shall never give a new session the id of a live one, refusing the hello
+      when eight tries find no free id.
+    rationale: An uptime counter wraps after 49.7 days; a reused 16-bit id would put one board's frames under another's keys.
+    satisfies: [GW-0001]
+    status: proposed
+    verification: analysis
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, sessions]
+
+  - id: GW-SEC-0004
+    title: A replayed hello is not answered
+    statement: >
+      The gateway shall remember the latest eight hello nonces of each board,
+      keep them across a restart, and refuse a hello that repeats one without
+      changing its sessions or the sessions file.
+    rationale: A recorded hello sent again must not open a session or disturb the board's own.
+    satisfies: [GW-0001, GW-0004]
+    decided_by: [ADR-0003]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, replay]
+
+  - id: GW-SEC-0005
+    title: A session belongs to the link it was opened on
+    statement: >
+      A session shall be held to the link its hello came on — the serial link, one
+      uplink connection, the HTTP bridge, or a relay and its port — and a new
+      session on the serial link shall become the one frames down it are sealed
+      under only once a frame sealed under it has come up, or at once when the
+      link holds no live session.
+    rationale: A hello replayed onto a link, or a frame moved to another link, must not take a board's session from it.
+    satisfies: [GW-0001]
+    decided_by: [ADR-0003]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, sessions]
+
+  - id: GW-SEC-0006
+    title: Plain frames only on the serial link, and only when allowed
+    statement: >
+      The gateway shall drop every plain frame that arrives on an uplink
+      connection or the HTTP bridge, and on the serial link unless
+      ALLOW_PLAIN_FRAMES=1, in which case it shall log once that it accepts them.
+    rationale: The allowance is for boards being reflashed on a cable, never for a network.
+    satisfies: [GW-0001]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security]
+
+  - id: GW-SEC-0007
+    title: The node manifest is read and enforced
+    statement: >
+      The gateway shall read `nodes.txt` beside its key at start and again within
+      5 s of it changing, refuse a hello from a board it does not list or marks
+      revoked, drop such a board's live sessions when it is read, and keep the
+      last manifest in force when the file disappears; with no manifest ever read
+      it shall accept any board whose key derives and say so once.
+    rationale: A revocation in Mesh must reach the gateway within seconds, and removing a file must not let a revoked board back in.
+    satisfies: [GW-0002]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, manifest, revocation]
+
+  - id: GW-SEC-0008
+    title: A board speaks only for its place, a relay only for its areas
+    statement: >
+      The gateway shall take a reading only for the area and node its board's
+      manifest line names, take an announce only from a relay for an area the
+      manifest gives it, and refuse every announce for the gateway's own area,
+      with or without a manifest.
+    rationale: A board that holds a valid key must still not report as another board or claim another mesh's area.
+    satisfies: [GW-0002, GW-0007]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, manifest, relay]
+
+  - id: GW-SEC-0009
+    title: A hello is tried under the manifest's epoch, then the grace epoch
+    statement: >
+      The gateway shall authenticate a hello under the key epoch the manifest
+      names for the board and, while the board has not confirmed that epoch,
+      under the epoch before it, and shall drop a session held under an epoch
+      more than one behind the manifest's.
+    rationale: One epoch of grace lets a board be rotated while it runs; two behind is a key that should no longer open anything.
+    satisfies: [GW-0003]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, key-rotation]
+
+  - id: GW-SEC-0010
+    title: REKEY is sent, retried and confirmed by proof
+    statement: >
+      Under a session in the grace epoch the gateway shall send REKEY sealed under
+      that session, again after 20 s without an answer and at most three times in
+      one session; it shall confirm the new epoch only on a REKEY_ACK whose proof
+      checks, then drop the board's other sessions under older epochs and keep
+      the confirmation across a restart. A board answering epoch 0 with a zero
+      proof shall be recorded as unable to rotate and not asked again for that
+      epoch.
+    rationale: The old key stops working only once the board provably holds the new one, and a board without a key store must not be asked forever.
+    satisfies: [GW-0003]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, key-rotation]
+
+  - id: GW-SEC-0011
+    title: What happened to each board's key is reported
+    statement: >
+      The gateway shall write `rekey.txt` beside the manifest, one line
+      `uid|epoch|status|time` per board with status `confirmed` or `cannot`, and
+      serve the same with the manifest's epoch at GET /api/v1/keys.
+    rationale: Mesh shows the rotation state of each board from this.
+    satisfies: [GW-0003]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, key-rotation, api]
+
+  - id: GW-SEC-0012
+    title: Sessions and counters are kept across a restart
+    statement: >
+      The gateway shall write its live sessions to GATEWAY_SESSION_FILE (by
+      default `sessions` beside its key), readable by its user only, when a
+      session opens and whenever a counter has moved 64 past what was last
+      written, and at start shall restore each unexpired session with both
+      counters 128 past the written marks.
+    rationale: A counter used before the restart lies below the mark plus 64, so no recorded frame opens after it.
+    satisfies: [GW-0004, GW-0012]
+    decided_by: [ADR-0001]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, restart]
+
+  - id: GW-SEC-0013
+    title: Boards with a restored session are asked for a new one
+    statement: >
+      The gateway shall send SESSION_RESET with reason 1, sealed under the
+      restored session, to each board holding one — on the serial link as soon as
+      it opens, and through a relay or on an uplink connection at the board's
+      first refused frame within the restored window — at most once in 10 s and
+      at most five times per session (SECURE_RESET_TRIES, counting every
+      attempt, including one that could not be written), after which it shall
+      send no further SESSION_RESET for that session; and it shall drop the
+      restored session once the board's new session carries a frame.
+    rationale: A board does not see the restart and would stay unheard until its counter passed the restored mark.
+    satisfies: [GW-0004]
+    decided_by: [ADR-0002]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, restart]
+
+  - id: GW-SEC-0014
+    title: Sealed frames are the shared known-answer vectors
+    statement: Given the key, session and counters of robohub-transport's tests/vectors/secure.json, the gateway shall write byte for byte the SESSION_RESET, REKEY and command frames the file records, shall take the board frames it records (a reading, a REKEY_ACK with its proof, an acknowledgement) and shall answer its hellos under epoch 0 and epoch 1; tests/vectors/secure.json is an identical copy of that file.
+    rationale: The board and the gateway are written apart in two languages; the same known answers checked against both is what shows they speak one protocol.
+    satisfies: [GW-0001, GW-0003]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, interop, vectors]

@@ -27,6 +27,7 @@ fn is_reading(msg_id: u32) bool {
         msg_id == MESSAGE_ID_STATE_READING || msg_id == MESSAGE_ID_SENSOR_READING
 }
 
+// @req GW-0001, GW-SEC-0006
 fn ingest_frame(encoded: string) void {
     let received: TransportFrame = robohub_v1_unframe(encoded)
     if !received.ok {

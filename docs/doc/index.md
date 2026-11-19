@@ -42,10 +42,12 @@ Every route but `/healthz` needs a token (see [Access](#access) below).
 - `GET /api/v1/diagnostics` — what the gateway itself is doing: the mode it was
   deployed in, the area it speaks for, its uptime and what it has carried.
 
-- `GET /api/v1/nodes/{area}/{node}/diagnostics` — asks one device to run its
-  hardware smoke and records the answer with the device. The request is sealed
-  under the board's session, on the link that session is held to (a relay's,
-  for a board behind one), as a command is; `409` when the board has none.
+- `POST /api/v1/nodes/{area}/{node}/diagnostics` — asks one device to run its
+  hardware smoke and records the answer with the device. The smoke drives the
+  board's hardware, so it is an action: a `POST` that needs the command scope.
+  The request is sealed under the board's session, on the link that session is
+  held to (a relay's, for a board behind one), as a command is; `409` when the
+  board has none.
 
 - `GET /api/v1/keys` — each board's key rotation as the gateway knows it: the
   epoch the manifest names, the epoch the board confirmed, and what last
@@ -53,20 +55,48 @@ Every route but `/healthz` needs a token (see [Access](#access) below).
   See [key epochs](#key-epochs-and-rotation).
 
 - `POST /api/v1/nodes/{area}/{node}/sampling-rate`, `…/switch`, `…/command` —
-  a control sent to a named device: its reporting interval, a switch (on or
-  off), or any opcode and argument (a device's own opcodes start at the vendor
+  a control sent to a named device: its reporting interval (`interval_ms`, a
+  positive number), a switch (`on`: `true`, `false`, `1` or `0`), or any opcode
+  and argument (a device's own opcodes start at the vendor
   base, so they cannot collide with a core one). A device in a child gateway's
-  area is reached down that child's uplink.
+  area is reached down that child's uplink. A switch's answer says the state the
+  board's acknowledgement carries — read back from the output, not echoed — as
+  `"state"`, and `"confirmed"` whether it is the one asked for; one routed down a
+  child's uplink is `202` with `"state":"pending"`, since nothing has been
+  reported here yet.
 
 - `POST /api/v1/devices` — register a network device (name, kind, transport,
   address, device id). The id is the device's stable identity: a client that
   knows the hardware id passes it, one that does not gets `transport:address`,
   and a second registration of the same id is refused rather than becoming a
-  second series.
-- `GET /api/v1/devices` — the registered devices and their latest state.
-- `POST /api/v1/devices/{id}/poll` — read an HTTP device's status.
+  second series. The address is one the gateway will call on its own
+  authority, so it is checked (`400` otherwise): for `http` (the default), an
+  `http://` or `https://` URL of a host and an optional port 1–65535, with no
+  path, query, fragment or credentials (a trailing `/` is dropped; the form
+  value may be URL-encoded). A device on the LAN — a private or public address,
+  or a name — is accepted; the gateway's own machine (`127.0.0.0/8`, `::1`,
+  `localhost`), an unspecified address (`0.0.0.0`) and a link-local one
+  (`169.254.0.0/16`, `fe80::/10`, where a cloud's metadata service sits) are
+  not, nor a numeric host written other than as four decimal octets
+  (`2130706433`, `0x7f.1`, `127.1`, `010.0.0.1`). A simulator on the gateway's
+  machine is registered with `GATEWAY_DEVICE_ALLOW_LOOPBACK=1`. A host *name*
+  that resolves to a refused address is not caught: registering takes the
+  command scope. For `mqtt` the address is the device's topic prefix, without
+  wildcards or spaces; another transport is refused.
+- `GET /api/v1/devices` — the registered devices, the `state` each last
+  reported and, while a switch waits for the device, the `requested` state.
+- `POST /api/v1/devices/{id}/poll` — read an HTTP device's status; the state
+  it reports ends a switch that was waiting for it.
 - `POST /api/v1/devices/{id}/switch` — switch an HTTP device on or off; the
-  state may come as a form field or as `?state=on|off`.
+  state may come as a form field or as `?state=on|off`. The device's state is
+  recorded from what it reports, not from what it was told: after
+  `Switch.Set` (which answers with the state the relay *was* in) the gateway
+  reads `Switch.GetStatus`, and answers `200` with `"confirmed":true` when the
+  device reports the requested state; `502` ("the device reports off after
+  being switched on") with that state recorded when it reports the other; and
+  `202` with `"confirmed":false` — the request kept as `requested`, the last
+  reported state unchanged — when it gives no status. An MQTT device is read and
+  switched through the broker, by Mesh: polling or switching one here is `409`.
 - `POST /api/v1/frames` — accepts one encoded frame (without its delimiter) from
   a network bridge holding a `command` token. A Shelly or another IP device
   reaches the gateway through a small poller; the frame is the one a board
@@ -137,8 +167,9 @@ when there is not.
 | `RELAY_UID` | unset | for `relay`: its id as a board of the parent's mesh, 16 hex digits |
 | `RELAY_KEY_FILE` | unset | for `relay`: the key the parent derives for that id, 32 hex digits, in a file only its user reads |
 | `OUTBOX_PATH` | `~/.rho/robohub/gateway-outbox.jsonl` | the durable reading feed |
-| `OUTBOX_MAX_ROWS` | `200000` | how many unacked readings are retained before the oldest are dropped |
-| `GATEWAY_ID` | `default` | this gateway's id; a caller's token must carry `gateway:<id>:read` or `gateway:<id>:command` |
+| `OUTBOX_MAX_ROWS` | `200000` | how many unacknowledged readings are retained before the oldest are dropped; the outbox's only bound (there is no retention by age) |
+| `GATEWAY_ID` | `default` | this gateway's id; a caller's token must carry `gateway:<id>:read`, `gateway:<id>:ack` or `gateway:<id>:command` |
+| `GATEWAY_DEVICE_ALLOW_LOOPBACK` | unset | `1` lets a network device be registered at a loopback address (a simulator on the gateway's machine); unset refuses one |
 | `RHO_AUTH_PUBLIC_KEY` | `~/.rho/auth/public.pem` | keeper's public key, which verifies every caller's token |
 | `GATEWAY_KEY_FILE` | unset | this gateway's key (64 hex digits, owner-only); each board's key is derived from it and the board's id |
 | `GATEWAY_SESSION_FILE` | `sessions` beside the key | where live board sessions are kept across a restart, owner-only |
@@ -250,9 +281,17 @@ as the link is open; for a board behind a relay (inside `RELAYED`) or on an upli
 connection, on its first refused frame — one whose tag is the session's and whose
 counter is past the kept mark. The downward counter is restored past the same
 margin, so the board takes the request; it drops the session and says hello, and
-is heard at once. A request goes at most once in 10 s per session, five times in
-all, and each is logged (`session <sid> restored after restart: asked board <uid>
-to start a new session`). Once the board's new session carries a frame, the
+is heard at once. A request goes at most once in 10 s per session, and at most
+five times per session in all (`SECURE_RESET_TRIES` in `src/gateway/secure.rho`;
+it is not configurable). A try is counted when it is attempted, so one that could
+not be written — the link was down — uses one of the five. Each request that is
+sent is logged (`session <sid> restored after restart: asked board <uid> to start
+a new session`) and counted in the state's `secure.resets`. After the fifth the
+gateway asks no more: a board that has not answered by then is heard again only
+when it says hello on its own (it restarts, or its session expires) or once its
+counter passes the restored mark. The cap keeps a board that cannot take the
+request — an older firmware, or one whose replies are lost — from being sent a
+frame every 10 s for the rest of the session. Once the board's new session carries a frame, the
 restored one is dropped. A board posted over HTTP is not asked: its next post
 under the restored session is refused, and it says hello again. A board needs a
 robohub-transport that knows `SESSION_RESET` to take the request; an older firmware ignores it and is heard again once its counter passes
@@ -274,8 +313,12 @@ what lets the gateway prune:
   where `source` is the board that sent it, by the id its session was opened
   with. A reading that arrived unauthenticated, or from a gateway below, has
   none, and the store places it by area and node.
-- `POST /api/v1/telemetry/ack` — `{"seq": n}`; removes what the aggregator has
-  committed and records the floor so a restart does not replay it.
+- `POST /api/v1/telemetry/ack` — `{"seq": n}`; records `n` as the caller's
+  cursor (by its token's subject), removes what every consumer the gateway
+  knows has acknowledged, and records the floor so a restart does not replay
+  it. A second reader — a backup, a debugger — therefore deletes nothing Mesh
+  has not stored. It changes the outbox, so it takes `gateway:<id>:ack`, not
+  the read scope.
 - `GET /api/v1/telemetry/outbox/status` — `path`, `depth`, `base_seq`,
   `last_seq` and `dropped`.
 
@@ -283,8 +326,11 @@ The sequence continues across a restart, including after the outbox has been
 emptied, and a repeated page is harmless: the aggregator keys a reading by
 gateway and sequence. The file is written through a buffered writer and synced
 every two seconds or every hundred readings, so a board's eMMC sees batches
-rather than one write per sample. `OUTBOX_MAX_ROWS` bounds what is kept when no
-aggregator is reachable; the oldest records are dropped and counted.
+rather than one write per sample. A record leaves the outbox in one of two
+ways only: every known consumer has acknowledged it, or more than
+`OUTBOX_MAX_ROWS` records are kept, when the oldest are dropped and counted in
+`dropped`. Nothing is removed by age — a backlog no collector has taken is kept,
+however old, until that cap.
 
 The same feed carries a network device the gateway polls. A Shelly's state and
 power are written as `state` and `power_w` under the gateway's own device id, so
@@ -428,6 +474,20 @@ the old epoch refused after confirmation and another holder of it dropped, a boa
 flashed at its current epoch, one too far behind, one that cannot rotate, a proof
 that does not check, a restart, and — when robohub-devices' `gateway_node` is
 built — the C host node rewriting its key file.
+`tools/vectors-smoke.py` checks the gateway against robohub-transport's
+known-answer vectors (`tests/vectors/secure.json`, an identical copy of the one
+robohub-transport holds, compared with it when that checkout is beside this
+one): restoring the vector session from a sessions file, the `SESSION_RESET`,
+`REKEY` and command it seals are the vector frames byte for byte, and the
+vector reading, `REKEY_ACK` and acknowledgement are taken; the vector hellos
+under epochs 0 and 1 are answered under the vector keys. The board is checked
+against the same file in robohub-transport, so the two sides cannot drift apart
+unnoticed.
+`tools/access-smoke.py` checks the access rules below: a token with the wrong
+scope refused on every route of each class, the outbox acknowledged only under
+its own scope, a board's smoke as an action, the device API's validation and the
+addresses a device may be registered at, a network switch recorded as a
+stand-in Shelly plug reports it, and TLS.
 
 ## Access
 
@@ -442,11 +502,20 @@ project's id) and what the caller may do:
 
 | Scope | Allows |
 |---|---|
-| `gateway:<id>:read` | telemetry, the outbox, nodes, diagnostics, the page and its frames |
-| `gateway:<id>:command` | switching, sampling rate, commands, registering and polling devices, injecting frames, pumping the uplink |
-| `gateway:<id>:*`, `gateway:*`, `*` | both |
+| `gateway:<id>:read` | telemetry, the outbox, nodes, the gateway's own diagnostics, keys, devices, the page and its frames |
+| `gateway:<id>:ack` | acknowledging the outbox (`POST /api/v1/telemetry/ack`): it moves the caller's cursor and lets the gateway delete what every consumer has, so it is a change, not a read |
+| `gateway:<id>:command` | switching, sampling rate, commands, running a board's hardware smoke, registering and polling devices, injecting frames, pumping the uplink |
+| `gateway:<id>:*`, `gateway:*`, `*` | all three |
 
-A caller without the scope it needs gets `403`. There is no static token: one
+A collector is given `gateway:<id>:read,gateway:<id>:ack`, which reads and
+acknowledges the outbox and commands nothing; Mesh's `gateway:<id>:*` holds it.
+
+A caller without the scope it needs gets `403`. A request that changes
+something (any `POST`) is also refused by the auth middleware when every scope
+the token holds ends in `:read`. A request that does not say what to do — a
+switch without `on` (or, for a network device, a `state` other than `on` or
+`off`), a sampling rate without a positive `interval_ms` or an area — is refused
+with `400` and nothing is sent to the device. There is no static token: one
 that leaks expires in minutes, and one gateway's token is not another's. Mesh,
 which reads and commands its gateways, holds a keeper client credential and asks
 for a `gateway:<project>:*` token for each project's gateway itself.
@@ -456,8 +525,11 @@ for a `gateway:<project>:*` token for each project's gateway itself.
 A gateway reached over a network should serve HTTPS, so the tokens Mesh presents
 never cross the network in the clear. Give it a certificate and key:
 `RHO_TLS_CERT` and `RHO_TLS_KEY` (paths on the machine the gateway runs on).
-With both set the API is served over TLS; without them it stays plain HTTP, for
-a loopback address or a reverse proxy that ends TLS in front of it.
+With both set the API is served over TLS only — a plain HTTP request on the
+port is answered `400` and served nothing; without either it stays plain HTTP,
+for a loopback address or a reverse proxy that ends TLS in front of it. With
+only one of the two set, or a certificate or key that cannot be loaded, the
+gateway does not start: a deployment that meant to encrypt is never left plain.
 
 In Mesh, a project names the pair as its `gateway_tls_cert` and
 `gateway_tls_key`, and Mesh passes them to the gateway it deploys; the project's

@@ -188,5 +188,9 @@ The live state, the in-memory frame history and the UDP stream are for a person
 watching the gateway. The outbox is for a service: it holds normalized readings,
 not frames, with a sequence that survives a restart, a page endpoint and an
 ack. A consumer stores the sequence it has committed and reads everything after
-it, which makes the feed at-least-once without making the gateway remember every
-consumer.
+it, which makes the feed at-least-once. The gateway keeps one acknowledged
+sequence per consumer (the subject of the token it acknowledged with) and deletes
+a record only once every consumer it knows has acknowledged it; the only other
+thing that removes a record is `OUTBOX_MAX_ROWS`, which drops the oldest when a
+consumer stops acknowledging. There is no retention by age: a backlog no
+collector has taken is kept, however old, until the row cap.

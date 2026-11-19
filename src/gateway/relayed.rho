@@ -35,6 +35,7 @@ module gateway.relayed
 
 // relayed_handle acts on a RELAYED payload that came in under the session
 // relay_sid.
+// @req GW-LINK-0005
 fn relayed_handle(relay_sid: string, payload: string) void {
     if strlen(payload) < 5 {
         return
@@ -81,6 +82,7 @@ fn relayed_handle(relay_sid: string, payload: string) void {
 }
 
 // relayed_hello answers a board's hello carried by a relay, through that relay.
+// @req GW-LINK-0005
 fn relayed_hello(relay_sid: string, relay_uid: string, port: u32, hello: string) void {
     if strlen(hello) != 24 {
         return

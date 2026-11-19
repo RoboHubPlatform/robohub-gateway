@@ -27,8 +27,12 @@ fn device_json_bool(text: string, key: string) string {
     if at < 0 {
         return ""
     }
-    let rest: string = str_slice(text, u32(at) + u32(strlen(key)) + 3,
+    var rest: string = str_slice(text, u32(at) + u32(strlen(key)) + 3,
         u32(strlen(text)) - u32(at) - u32(strlen(key)) - 3)
+    // A space after the colon is JSON too.
+    while strlen(rest) > 0 && (str_slice(rest, 0, 1) == " " || str_slice(rest, 0, 1) == "\t") {
+        rest = str_slice(rest, 1, strlen(rest) - 1)
+    }
     if str_index_of(rest, "true") == 0 {
         return "on"
     }
@@ -87,6 +91,258 @@ fn device_field_key(id: u32, field_name: string) string {
     return "device." + int_to_str(id) + "." + field_name
 }
 
+/* -------------------------------------------------------------------------- */
+/*  The address the gateway will call                                         */
+/* -------------------------------------------------------------------------- */
+
+// A registered address is what the gateway later requests on its own authority,
+// from inside the network it sits in. So an HTTP device's address is held to the
+// shape of one — http:// or https://, a host, an optional port and nothing else
+// — and to a host the gateway has a reason to call: a device on the LAN (any
+// private or public address, or a name), but not the gateway's own machine
+// (loopback, where the keeper and Mesh listen), not an unspecified address and
+// not a link-local one (169.254.0.0/16, where a cloud's metadata service sits).
+// A numeric host is four decimal octets: the other spellings a resolver accepts
+// (2130706433, 0x7f.1, 127.1, octal with leading zeros) would slip past the
+// loopback check. GATEWAY_DEVICE_ALLOW_LOOPBACK=1 lets a device simulator on
+// the gateway's own machine be registered. A name that resolves to a refused
+// address is not caught here: the caller holds the command scope.
+
+fn device_is_digits(text: string) bool {
+    if strlen(text) == 0 {
+        return false
+    }
+    var i: u32 = 0
+    while i < strlen(text) {
+        let c: string = str_slice(text, i, 1)
+        if c < "0" || c > "9" {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+fn device_lower(text: string) string {
+    var out: string = ""
+    var i: u32 = 0
+    while i < strlen(text) {
+        let c: u8 = str_at(text, i)
+        if c >= u8(65) && c <= u8(90) {
+            out = out + str_from_byte(c + u8(32))
+        } else {
+            out = out + str_from_byte(c)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// device_ipv4_octets is the host's four octets as "a.b.c.d" when it is a
+// numeric address, "" for a name, and "bad" for a numeric spelling that is not
+// four plain decimal octets.
+fn device_ipv4_octets(host: string) string {
+    var numeric: bool = true
+    var i: u32 = 0
+    while i < strlen(host) {
+        let c: string = str_slice(host, i, 1)
+        if !((c >= "0" && c <= "9") || c == ".") {
+            numeric = false
+        }
+        i = i + 1
+    }
+    var rest: string = host + "."
+    var parts: u32 = 0
+    var hexlike: bool = false
+    while strlen(rest) > 0 {
+        let dot: i32 = str_index_of(rest, ".")
+        let part: string = str_slice(rest, 0, u32(dot))
+        rest = str_slice(rest, u32(dot) + 1, strlen(rest) - u32(dot) - 1)
+        if str_index_of(device_lower(part), "0x") == 0 {
+            hexlike = true
+        }
+        if numeric && (!device_is_digits(part) || strlen(part) > 3 ||
+            (strlen(part) > 1 && str_slice(part, 0, 1) == "0") || int_from_str(part) > 255) {
+            return "bad"
+        }
+        parts = parts + 1
+    }
+    if hexlike {
+        return "bad"
+    }
+    if !numeric {
+        return ""
+    }
+    if parts != 4 {
+        return "bad"
+    }
+    return host
+}
+
+// device_url_decode reads a form value as a form encodes it: %XX is a byte and
+// + a space. An address sent encoded was stored encoded, and never reached.
+fn device_url_decode(text: string) string {
+    var out: string = ""
+    var i: u32 = 0
+    let hex: string = "0123456789abcdef"
+    while i < strlen(text) {
+        let c: string = str_slice(text, i, 1)
+        if c == "+" {
+            out = out + " "
+            i = i + 1
+        } else if c == "%" && i + 2 < strlen(text) {
+            let high: i32 = str_index_of(hex, device_lower(str_slice(text, i + 1, 1)))
+            let low: i32 = str_index_of(hex, device_lower(str_slice(text, i + 2, 1)))
+            if high < 0 || low < 0 {
+                out = out + c
+                i = i + 1
+            } else {
+                out = out + str_from_byte(u8(high * 16 + low))
+                i = i + 3
+            }
+        } else {
+            out = out + c
+            i = i + 1
+        }
+    }
+    return out
+}
+
+// device_address_problem says what is wrong with an address for a transport, or
+// "" when the gateway may call it. An MQTT device's address is its topic prefix.
+// @req GW-API-0005
+fn device_address_problem(transport: string, address: string) string {
+    if transport == "mqtt" {
+        if str_index_of(address, "#") >= 0 || str_index_of(address, "+") >= 0 ||
+            str_index_of(address, " ") >= 0 || str_index_of(address, "/") == 0 {
+            return "an MQTT device's address is a topic prefix, without wildcards or spaces"
+        }
+        return ""
+    }
+    if transport != "" && transport != "http" {
+        return "the transport is http or mqtt"
+    }
+    var rest: string = ""
+    if str_index_of(address, "http://") == 0 {
+        rest = str_slice(address, 7, strlen(address) - 7)
+    } else if str_index_of(address, "https://") == 0 {
+        rest = str_slice(address, 8, strlen(address) - 8)
+    } else {
+        return "the address must be an http:// or https:// URL"
+    }
+    if strlen(rest) > 0 && str_slice(rest, strlen(rest) - 1, 1) == "/" {
+        rest = str_slice(rest, 0, strlen(rest) - 1)
+    }
+    var i: u32 = 0
+    while i < strlen(rest) {
+        let c: u8 = str_at(rest, i)
+        if c <= u8(32) || c >= u8(127) || c == u8(47) || c == u8(63) || c == u8(35) ||
+            c == u8(64) || c == u8(92) || c == u8(37) {
+            return "the address is a scheme, a host and an optional port, with no path, query or credentials"
+        }
+        i = i + 1
+    }
+    var host: string = rest
+    var port: string = ""
+    if str_index_of(rest, "[") == 0 {
+        let close: i32 = str_index_of(rest, "]")
+        if close < 0 {
+            return "the address's host is not well formed"
+        }
+        host = str_slice(rest, 0, u32(close) + 1)
+        let after: string = str_slice(rest, u32(close) + 1, strlen(rest) - u32(close) - 1)
+        if strlen(after) > 0 {
+            if str_index_of(after, ":") != 0 {
+                return "the address's host is not well formed"
+            }
+            port = str_slice(after, 1, strlen(after) - 1)
+            if strlen(port) == 0 {
+                return "the address's port is a number from 1 to 65535"
+            }
+        }
+    } else {
+        let colon: i32 = str_index_of(rest, ":")
+        if colon >= 0 {
+            host = str_slice(rest, 0, u32(colon))
+            port = str_slice(rest, u32(colon) + 1, strlen(rest) - u32(colon) - 1)
+            if strlen(port) == 0 {
+                return "the address's port is a number from 1 to 65535"
+            }
+        }
+    }
+    if strlen(port) > 0 && (!device_is_digits(port) || strlen(port) > 5 ||
+        int_from_str(port) < 1 || int_from_str(port) > 65535) {
+        return "the address's port is a number from 1 to 65535"
+    }
+    let name: string = device_lower(host)
+    if strlen(name) == 0 {
+        return "the address names no host"
+    }
+    var loopback: bool = false
+    if str_index_of(name, "[") == 0 {
+        let inner: string = str_slice(name, 1, strlen(name) - 2)
+        var j: u32 = 0
+        while j < strlen(inner) {
+            let c: string = str_slice(inner, j, 1)
+            if !((c >= "0" && c <= "9") || (c >= "a" && c <= "f") || c == ":" || c == ".") {
+                return "the address's host is not well formed"
+            }
+            j = j + 1
+        }
+        if inner == "::" || inner == "::0" {
+            return "the gateway does not call an unspecified address"
+        }
+        if str_index_of(inner, "fe8") == 0 || str_index_of(inner, "fe9") == 0 ||
+            str_index_of(inner, "fea") == 0 || str_index_of(inner, "feb") == 0 ||
+            str_index_of(inner, "::ffff:169.254.") == 0 {
+            return "the gateway does not call a link-local address"
+        }
+        if inner == "::1" || str_index_of(inner, "::ffff:127.") == 0 {
+            loopback = true
+        }
+    } else {
+        var j: u32 = 0
+        while j < strlen(name) {
+            let c: string = str_slice(name, j, 1)
+            if !((c >= "0" && c <= "9") || (c >= "a" && c <= "z") || c == "." || c == "-") {
+                return "the address's host is not well formed"
+            }
+            j = j + 1
+        }
+        if str_slice(name, 0, 1) == "." || str_slice(name, 0, 1) == "-" ||
+            str_index_of(name, "..") >= 0 {
+            return "the address's host is not well formed"
+        }
+        let octets: string = device_ipv4_octets(name)
+        if octets == "bad" {
+            return "a numeric host is four decimal octets"
+        }
+        if str_index_of(name, "0.") == 0 {
+            return "the gateway does not call an unspecified address"
+        }
+        if str_index_of(name, "169.254.") == 0 {
+            return "the gateway does not call a link-local address"
+        }
+        if str_index_of(name, "127.") == 0 || name == "localhost" || name == "localhost." ||
+            (strlen(name) > 10 && str_slice(name, strlen(name) - 10, 10) == ".localhost") {
+            loopback = true
+        }
+    }
+    if loopback && getenv("GATEWAY_DEVICE_ALLOW_LOOPBACK") != "1" {
+        return "the gateway does not call its own machine (loopback)"
+    }
+    return ""
+}
+
+// device_address_clean is a checked HTTP address without the trailing slash, so
+// the RPC paths are appended to it whole.
+fn device_address_clean(transport: string, address: string) string {
+    if transport != "mqtt" && strlen(address) > 0 && str_slice(address, strlen(address) - 1, 1) == "/" {
+        return str_slice(address, 0, strlen(address) - 1)
+    }
+    return address
+}
+
 fn device_count() u32 {
     return gateway_state_get_u32("devices")
 }
@@ -109,17 +365,24 @@ fn device_find_by_uid(uid: string) u32 {
     return 0
 }
 
+// @req GW-0010, GW-TEL-0007, GW-API-0005
 fn device_register(req: Request) Response {
     if !gateway_allowed(req, "command") {
         return gateway_denied()
     }
     let body: string = request_body(req)
     let name: string = device_form(body, "name")
-    let address: string = device_form(body, "address")
+    let transport: string = device_form(body, "transport")
+    var address: string = device_url_decode(device_form(body, "address"))
     var device_id: string = device_form(body, "device_id")
     if strlen(name) == 0 || strlen(address) == 0 {
         return json(400, "{\"success\":false,\"error\":\"name and address are required\"}")
     }
+    let problem: string = device_address_problem(transport, address)
+    if problem != "" {
+        return json(400, "{\"success\":false,\"error\":" + json_string(problem) + "}")
+    }
+    address = device_address_clean(transport, address)
     // A device that names no id is still given one that is stable and unique:
     // its transport and address. A client that knows the hardware id passes it
     // and the same value cannot be registered twice.
@@ -150,6 +413,7 @@ fn device_one(id: u32) string {
         ",\"address\":" + json_string(gateway_state_get(device_field_key(id, "address"))) +
         ",\"device_id\":" + json_string(gateway_state_get(device_field_key(id, "device_id"))) +
         ",\"state\":" + json_string(gateway_state_get(device_field_key(id, "state"))) +
+        ",\"requested\":" + json_string(gateway_state_get(device_field_key(id, "requested"))) +
         ",\"power_w\":" + gateway_state_get(device_field_key(id, "power_w")) +
         ",\"updated_ms\":" + json_string(gateway_state_get(device_field_key(id, "updated"))) + "}"
 }
@@ -178,6 +442,7 @@ fn device_state_u32(state: string) u32 {
     return 0
 }
 
+// @req GW-TEL-0007
 fn device_poll(req: Request) Response {
     if !gateway_allowed(req, "command") {
         return gateway_denied()
@@ -187,15 +452,14 @@ fn device_poll(req: Request) Response {
     if id == 0 || strlen(address) == 0 {
         return json(404, "{\"success\":false}")
     }
+    if gateway_state_get(device_field_key(id, "transport")) == "mqtt" {
+        return device_not_http()
+    }
     let text: string = gateway_http_get(address + "/rpc/Shelly.GetStatus", 3000)
     if strlen(text) == 0 {
         return json(502, "{\"success\":false,\"error\":\"device did not answer\"}")
     }
-    let state: string = device_json_bool(text, "output")
-    if strlen(state) > 0 {
-        gateway_state_set(device_field_key(id, "state"), state)
-        outbox_emit_u32(gateway_area(), id, "state", device_state_u32(state), 0)
-    }
+    device_reported(id, device_json_bool(text, "output"))
     let power: string = device_json_number(text, "apower")
     if strlen(power) > 0 {
         gateway_state_set(device_field_key(id, "power_w"), power)
@@ -205,6 +469,37 @@ fn device_poll(req: Request) Response {
     return json(200, "{\"success\":true,\"device\":" + device_one(id) + "}")
 }
 
+// device_not_http answers a poll or a switch of an MQTT device, whose address is
+// a topic prefix the gateway has no HTTP to call: it is read and switched
+// through the broker, by Mesh.
+fn device_not_http() Response {
+    return json(409, "{\"success\":false,\"error\":\"an MQTT device is read and switched through the broker, not by the gateway\"}")
+}
+
+// device_reported records the state a device reported — "on" or "off" — as its
+// state, and appends it to the outbox. A switch that was waiting for the device
+// to report it ends here when it does.
+fn device_reported(id: u32, state: string) void {
+    if strlen(state) == 0 {
+        return
+    }
+    gateway_state_set(device_field_key(id, "state"), state)
+    if gateway_state_get(device_field_key(id, "requested")) == state {
+        gateway_state_set(device_field_key(id, "requested"), "")
+    }
+    outbox_emit_u32(gateway_area(), id, "state", device_state_u32(state), 0)
+}
+
+// devices_switch switches an HTTP device and records the state it reports, not
+// the one it was told: Switch.Set answers with the state the relay *was* in, so
+// the device is asked for its status straight after, and
+//
+// - the requested state reported: 200, "confirmed":true, and the state recorded;
+// - the other state reported: 502 "the device reports …", and that state recorded
+//   (the switch did not happen — a stuck relay, a plug held by its own button);
+// - no status: 202, "confirmed":false, the request kept as `requested` and the
+//   last reported state left as it was, until a poll reads the device.
+// @req GW-TEL-0007, GW-API-0004, GW-TEL-0008
 fn devices_switch(req: Request) Response {
     if !gateway_allowed(req, "command") {
         return gateway_denied()
@@ -215,9 +510,17 @@ fn devices_switch(req: Request) Response {
     if strlen(state) == 0 {
         state = request_query_param(req, "state")
     }
+    // The state is "on" or "off"; anything else is refused rather than sent as
+    // "off" and recorded as the device's state.
+    if state != "on" && state != "off" {
+        return json(400, "{\"success\":false,\"error\":\"state must be on or off\"}")
+    }
     let address: string = gateway_state_get(device_field_key(id, "address"))
     if id == 0 || strlen(address) == 0 {
         return json(404, "{\"success\":false}")
+    }
+    if gateway_state_get(device_field_key(id, "transport")) == "mqtt" {
+        return device_not_http()
     }
     var on: string = "false"
     if state == "on" {
@@ -228,8 +531,19 @@ fn devices_switch(req: Request) Response {
     if strlen(response) == 0 {
         return json(502, "{\"success\":false,\"error\":\"device did not answer\"}")
     }
-    gateway_state_set(device_field_key(id, "state"), state)
+    gateway_state_set(device_field_key(id, "requested"), state)
     gateway_state_set(device_field_key(id, "updated"), gateway_wall_time_ms())
-    outbox_emit_u32(gateway_area(), id, "state", device_state_u32(state), 0)
-    return json(200, "{\"success\":true,\"device\":" + device_one(id) + "}")
+    let reported: string = device_json_bool(
+        gateway_http_get(address + "/rpc/Switch.GetStatus?id=0", 3000), "output")
+    device_reported(id, reported)
+    if reported == state {
+        return json(200, "{\"success\":true,\"confirmed\":true,\"device\":" + device_one(id) + "}")
+    }
+    if strlen(reported) > 0 {
+        gateway_state_set(device_field_key(id, "requested"), "")
+        return json(502, "{\"success\":false,\"confirmed\":false,\"error\":" +
+            json_string("the device reports " + reported + " after being switched " + state) +
+            ",\"device\":" + device_one(id) + "}")
+    }
+    return json(202, "{\"success\":true,\"confirmed\":false,\"device\":" + device_one(id) + "}")
 }

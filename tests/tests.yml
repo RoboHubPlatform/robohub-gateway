@@ -3,12 +3,14 @@
 # the root page, the streamed datagrams and the uplink.
 name: gateway
 suites:
+  # @verifies GW-0006, GW-0009, GW-0011, GW-0014, GW-API-0002, GW-API-0003, GW-TEL-0004, GW-TEL-0005, GW-TEL-0006, GW-LINK-0001, GW-LINK-0003, GW-SEC-0002, GW-SEC-0006, GW-SEC-0012
   - name: gateway-smoke
     kind: command
     tags: [smoke]
     command: [python3, tools/smoke.py]
   # The trust rules: the node manifest, announces, sessions bound to their link,
   # replayed hellos, and counters across a restart.
+  # @verifies GW-0001, GW-0002, GW-SEC-0001, GW-SEC-0002, GW-SEC-0004, GW-SEC-0005, GW-SEC-0007, GW-SEC-0008, GW-SEC-0012, GW-LINK-0005, GW-LINK-0006, GW-API-0003
   - name: gateway-security
     kind: command
     tags: [smoke, security]
@@ -16,6 +18,7 @@ suites:
   # Key epochs and their rotation: the grace epoch, REKEY and its proof, the old
   # key refused once the new one is confirmed, a board that cannot rotate, and
   # the C host node rewriting its key file (skipped when that node is not built).
+  # @verifies GW-0003, GW-SEC-0009, GW-SEC-0010, GW-SEC-0011
   - name: gateway-rekey
     kind: command
     tags: [smoke, security, rekey]
@@ -25,6 +28,7 @@ suites:
   # that forges; the USB port; a gateway in relay mode; the master restarting.
   # It builds robohub-drivers' relay-host natively, and says SKIP (and passes)
   # where that checkout or a C toolchain is missing.
+  # @verifies GW-0007, GW-LINK-0003, GW-LINK-0004, GW-LINK-0005, GW-TEL-0001
   - name: gateway-relay
     kind: command
     tags: [smoke, security, relay]
@@ -35,7 +39,31 @@ suites:
   # session heard at once, and a frame recorded before the restart still
   # refused. The C host node on the serial link is heard again within seconds
   # (skipped when robohub-devices' gateway_node is not built).
+  # @verifies GW-0004, GW-SEC-0012, GW-SEC-0013
   - name: gateway-restart
     kind: command
     tags: [smoke, security, restart]
     command: [python3, tools/restart-smoke.py]
+  # Who may call the gateway and what a request must say: a token with the
+  # wrong scope refused on every route of each class, a board's hardware smoke
+  # as an action (POST, the command scope), the device API refusing a switch or
+  # a sampling rate that does not say what to do, and TLS — HTTPS only with a
+  # certificate, a plain request on its port refused, a pair that cannot be
+  # served stopping the gateway rather than leaving it plain. Acknowledging the
+  # outbox under its own scope; a device registered only at an address the
+  # gateway should call; a network switch recorded as a stand-in Shelly plug
+  # reports it (confirmed, a stuck relay, no status).
+  # @verifies GW-0008, GW-0013, GW-API-0001, GW-API-0003, GW-API-0004, GW-API-0005, GW-TEL-0003, GW-TEL-0007, GW-TEL-0008
+  - name: gateway-access
+    kind: command
+    tags: [smoke, security, access]
+    command: [python3, tools/access-smoke.py]
+  # The gateway against the known-answer vectors robohub-transport holds
+  # (tests/vectors/secure.json, an identical copy checked against the sibling
+  # checkout when there is one): the frames it seals under a restored session
+  # byte for byte, the board's frames it takes, and the hellos it answers.
+  # @verifies GW-SEC-0014, GW-0001, GW-0003
+  - name: gateway-vectors
+    kind: command
+    tags: [smoke, security, vectors]
+    command: [python3, tools/vectors-smoke.py]

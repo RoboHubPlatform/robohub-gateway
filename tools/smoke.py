@@ -28,9 +28,10 @@ import time
 
 BIN = os.environ.get("GATEWAY_BIN", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build", "robohub-gateway"))
 HOST = "127.0.0.1"
-HTTP_PORT = 18080
-UDP_PORT = 19870
-UPLINK_PORT = 18081
+# The ports this smoke takes; another run on the same machine names others.
+HTTP_PORT = int(os.environ.get("GATEWAY_SMOKE_HTTP_PORT", "18080"))
+UDP_PORT = int(os.environ.get("GATEWAY_SMOKE_UDP_PORT", "19870"))
+UPLINK_PORT = int(os.environ.get("GATEWAY_SMOKE_UPLINK_PORT", "18081"))
 AREA = 7
 SAMPLING_RATE_OPCODE = 1
 
@@ -618,7 +619,7 @@ def main():
 
     t = threading.Thread(target=diag_responder)
     t.start()
-    status, body = http("GET", "/api/v1/nodes/7/1/diagnostics")
+    status, body = http("POST", "/api/v1/nodes/7/1/diagnostics")
     t.join(timeout=5)
     print("DIAG device:", status, body)
     try:

@@ -1,0 +1,67 @@
+# The gateway's HTTP API: who may call it and how a command or a diagnostic is
+# answered (src/gateway/security.rho, state.rho). Proposed until the maintainer
+# approves them.
+level: SUB
+prefix: GW-API
+title: Gateway API
+requirements:
+  - id: GW-API-0001
+    title: Read, acknowledge and command scopes name this gateway
+    statement: >
+      A route that reads — telemetry, the outbox, nodes, the gateway's own diagnostics, keys, devices, the page and its frames — shall require `gateway:<id>:read`; acknowledging the outbox (POST /api/v1/telemetry/ack), which moves the caller's cursor and lets the gateway delete records, shall require `gateway:<id>:ack`; and a route that acts — switching, sampling rate, commands, running a board's hardware smoke, registering, polling and switching devices, posting frames, pumping the uplink — shall require `gateway:<id>:command`, where <id> is GATEWAY_ID (`default` when unset) and `gateway:<id>:*`, `gateway:*` and `*` hold all three; any other caller gets 403.
+    rationale: Mesh asks each gateway's token for that gateway alone; a reader must not be able to switch.
+    satisfies: [GW-0008]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, access, api]
+
+  - id: GW-API-0002
+    title: A command is answered with what the device did
+    statement: >
+      A command to a device on this gateway's own link or session shall be
+      answered 200 with the opcode and the value the device actually set, 504
+      when the device does not acknowledge within 2000 ms, 502 when it refuses or
+      answers malformed, and 409 when the board has no authenticated session.
+    rationale: A node may clamp what it can meet, and the caller must tell a refusal from a silence.
+    satisfies: [GW-0006]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [commands, api]
+
+  - id: GW-API-0003
+    title: A board's diagnostics are asked for under its session
+    statement: >
+      POST /api/v1/nodes/{area}/{node}/diagnostics shall send the board a diagnostic request sealed under its session on the link that session is held to, answer with the board's counters and probe results within 2000 ms or 504, and keep the answer with the device in the node listing; running the smoke drives the board's hardware, so it is an action and no GET runs it.
+    rationale: A hardware smoke run remotely must be as authenticated as a command.
+    satisfies: [GW-0009]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [observability, api]
+
+  - id: GW-API-0004
+    title: The device API refuses a request that does not say what to do
+    statement: A switch request shall be refused with 400 unless it states the state to set — true, false, 1 or 0 for a board's switch, on or off for a network device — and a sampling-rate request unless it names an area and a positive interval_ms; nothing shall be sent to a device for a refused request.
+    rationale: A malformed or truncated request taken as 'off' or as a default would switch a load nobody asked to switch.
+    satisfies: [GW-0006, GW-0010]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [commands, api, validation]
+
+  - id: GW-API-0005
+    title: A device is registered only at an address the gateway should call
+    statement: POST /api/v1/devices shall refuse with 400 an HTTP device whose address is not an http:// or https:// URL of a host and an optional port 1-65535 with no path, query, fragment or credentials, or whose host is loopback (unless GATEWAY_DEVICE_ALLOW_LOOPBACK=1), unspecified, link-local, or a numeric host other than four decimal octets; an MQTT device whose topic prefix holds a wildcard or a space; and any transport other than http and mqtt. A LAN or public address and a host name shall be accepted.
+    rationale: The gateway calls a registered address on its own authority from inside the LAN; an address that is not a device's would let a command token make it request its own machine's services or a metadata endpoint.
+    satisfies: [GW-0010]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [devices, validation, security]

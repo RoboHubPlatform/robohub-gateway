@@ -12,7 +12,7 @@ module:
   previous_ids:
     - robohub-gateway
   type: rho
-  version: 0.7.2
+  version: 0.7.3
   license: "MIT"
   description: >
     Edge gateway for RoboHub firmware nodes: ingests COBS frames over serial,
@@ -20,6 +20,10 @@ module:
     and serves a REST API for web clients.
 
 platform: robohub
+
+# The gateway's requirements are numbered GW-NNNN (and GW-<SUB>-NNNN for its
+# subsystems) and serve the system requirements robohub holds.
+requirements: { prefix: GW, parent: robohub }
 
 main: src/main.rho
 
@@ -79,11 +83,11 @@ docs:
   title: RoboHub Gateway
   section: applications
   order: "20"
-  index: docs/index.md
+  index: docs/doc/index.md
   sources:
-    - docs/index.md
-    - docs/architecture.md
-    - docs/deployment.md
+    - docs/doc/index.md
+    - docs/doc/architecture.md
+    - docs/doc/deployment.md
 
 hardware:
   targets: targets/

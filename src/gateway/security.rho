@@ -20,11 +20,19 @@ module gateway.security
 // token. What a verified caller may do is in the token's scopes, named for this
 // gateway's id (GATEWAY_ID, "default" when unset):
 //
-//   gateway:<id>:read      telemetry, the outbox, nodes, diagnostics, frames
-//   gateway:<id>:command   switching, sampling rate, commands, registering and
-//                          polling devices, injecting frames, pumping the uplink
+//   gateway:<id>:read      telemetry, the outbox, nodes, the gateway's own
+//                          diagnostics, frames
+//   gateway:<id>:ack       acknowledging the outbox: it moves the caller's
+//                          cursor and lets the gateway delete what every
+//                          consumer has, so it is a change, not a read — and
+//                          the auth middleware takes no POST from a token whose
+//                          scopes all end in :read
+//   gateway:<id>:command   switching, sampling rate, commands, running a board's
+//                          hardware smoke, registering and polling devices,
+//                          injecting frames, pumping the uplink
 //
-// `gateway:<id>:*`, `gateway:*` and `*` hold both. There is no static token: a
+// `gateway:<id>:*`, `gateway:*` and `*` hold all three; a collector is given
+// `gateway:<id>:read,gateway:<id>:ack`, which commands nothing. There is no static token: a
 // token that leaks expires in minutes, and one gateway's token is not another's.
 
 fn gateway_id() string {
@@ -40,6 +48,7 @@ fn gateway_scope_held(scopes: string, scope: string) bool {
 }
 
 // gateway_allowed is whether the verified caller holds `action` on this gateway.
+// @req GW-0008, GW-API-0001
 fn gateway_allowed(req: Request, action: string) bool {
     let scopes: string = header_str(req, "X-Rho-Scopes")
     let id: string = gateway_id()

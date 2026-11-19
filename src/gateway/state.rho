@@ -66,6 +66,7 @@ fn drain_uplink() u32 {
 // this gateway does not hear directly — a board behind a relay — and becomes the
 // same device record a local reading would. An announce says which gateway is
 // below and the area it speaks for, which is what a command is routed down by.
+// @req GW-LINK-0003, GW-SEC-0006
 fn apply_uplink_frame(encoded: string, connection: u32) void {
     let received: TransportFrame = robohub_v1_unframe(encoded)
     if !received.ok {
@@ -229,6 +230,7 @@ fn latest_temperature(req: Request) Response {
 }
 
 // nodes lists every device a frame has come from, with its newest values.
+// @req GW-0014
 fn nodes(req: Request) Response {
     if !gateway_allowed(req, "read") {
         return gateway_denied()
@@ -404,6 +406,7 @@ fn latest_state(req: Request) Response {
 
 // diagnostics says what the gateway itself is doing: the mode it was deployed
 // in, the area it speaks for, how long it has been up, and what it has carried.
+// @req GW-0009
 fn diagnostics(req: Request) Response {
     if !gateway_allowed(req, "read") {
         return gateway_denied()
@@ -429,6 +432,7 @@ fn received_at(key: u32) string {
     return value
 }
 
+// @req GW-0011
 fn home_with_limit(req: Request, limit: u32) Response {
     drain_uplink()
     let count: u32 = gateway_node_count()
@@ -529,8 +533,13 @@ fn set_sampling_rate(req: Request) Response {
 // and a probe it does not have is absent rather than failed. The answer is kept
 // with the device, so the listing carries the last smoke as well as the last
 // reading.
+//
+// Running the smoke drives the board's hardware — its outputs and probes — so
+// it is an action, not a read: it is a POST and needs the command scope, the
+// same as switching an output.
+// @req GW-0009, GW-API-0001, GW-API-0003
 fn device_diagnostics(req: Request) Response {
-    if !gateway_allowed(req, "read") {
+    if !gateway_allowed(req, "command") {
         return gateway_denied()
     }
     let area: u32 = int_from_str(param(req, "area"))
@@ -599,6 +608,7 @@ fn diag_json(diag: DiagResponse) string {
 // same way: a device in a child's area goes down that child's uplink and is
 // answered asynchronously; a device on this gateway's own link is answered in
 // the request. A typed endpoint is a thin wrapper over this.
+// @req GW-0006, GW-LINK-0003
 fn route_control(area: u32, node: u32, opcode: u16, argument: u32) Response {
     // A board revoked a moment ago is not sent a command.
     manifest_refresh(false)
@@ -616,7 +626,7 @@ fn route_control(area: u32, node: u32, opcode: u16, argument: u32) Response {
         if !secure_send(board_sid, MESSAGE_ID_CONTROL_REQUEST, tx, control_request_marshal(control)) {
             return gateway_error(503, "the board's link is unavailable")
         }
-        return control_answer(tx, opcode)
+        return control_answer(tx, opcode, argument)
     }
 
     let child: u32 = gateway_state_get_u32("area." + int_to_str(area))
@@ -629,7 +639,13 @@ fn route_control(area: u32, node: u32, opcode: u16, argument: u32) Response {
         if !gateway_uplink_send(device_area(child), device_node(child), routed) {
             return gateway_error(503, "the child that owns that area is not connected")
         }
-        return json(202, "{\"success\":true,\"routed\":true,\"tx\":" + int_to_str(tx) + "}")
+        // The child answers its own board; nothing has been reported here yet,
+        // so a switch is said to be pending, never done.
+        var pending: string = ""
+        if opcode == u16(CONTROL_OPCODE_SET_SWITCH) {
+            pending = ",\"confirmed\":false,\"state\":\"pending\""
+        }
+        return json(202, "{\"success\":true,\"routed\":true,\"tx\":" + int_to_str(tx) + pending + "}")
     }
 
     // A board on this gateway's own link is sent the command sealed under its
@@ -643,12 +659,15 @@ fn route_control(area: u32, node: u32, opcode: u16, argument: u32) Response {
     if !gateway_serial_write(encoded) {
         return gateway_error(503, "the serial link is unavailable")
     }
-    return control_answer(tx, opcode)
+    return control_answer(tx, opcode, argument)
 }
 
 // control_answer waits for the acknowledgement of a command sent with tx and
-// answers the request with it.
-fn control_answer(tx: u32, opcode: u16) Response {
+// answers the request with it. A board's acknowledgement carries the state its
+// output reached (`actual`), read back rather than echoed, so a switch also
+// says that state and whether it is the one asked for (`confirmed`).
+// @req GW-API-0002, GW-TEL-0008
+fn control_answer(tx: u32, opcode: u16, requested: u32) Response {
     let response: string = gateway_rpc_wait(tx, 2000)
     if strlen(response) == 0 {
         return gateway_error(504, "the device did not acknowledge in 2000 ms")
@@ -660,8 +679,20 @@ fn control_answer(tx: u32, opcode: u16) Response {
     if acknowledgement.result != 0 {
         return gateway_error(502, "the device refused the command")
     }
+    var switched: string = ""
+    if opcode == u16(CONTROL_OPCODE_SET_SWITCH) {
+        var reached: string = "off"
+        if acknowledgement.argument != 0 {
+            reached = "on"
+        }
+        var confirmed: string = "false"
+        if (acknowledgement.argument != 0) == (requested != 0) {
+            confirmed = "true"
+        }
+        switched = ",\"state\":\"" + reached + "\",\"confirmed\":" + confirmed
+    }
     return json(200, "{\"success\":true,\"opcode\":" + int_to_str(u32(opcode)) +
-        ",\"actual\":" + int_to_str(acknowledgement.argument) + "}")
+        ",\"actual\":" + int_to_str(acknowledgement.argument) + switched + "}")
 }
 
 // device_sampling_rate changes one device's reporting interval: opcode 1, the
@@ -708,11 +739,51 @@ fn device_switch(req: Request) Response {
     if area == 0 {
         return gateway_error(400, "an area and a node are required")
     }
-    var on: u32 = 0
-    if parse_bool_field(request_body(req), "\"on\"") {
-        on = 1
+    // The state is said, never assumed: a body without `on`, or with anything
+    // but true, false, 1 or 0, is refused rather than taken as "off".
+    let on: i32 = parse_switch_on(request_body(req))
+    if on < 0 {
+        return gateway_error(400, "on is required and must be true or false")
     }
-    return route_control(area, node, u16(CONTROL_OPCODE_SET_SWITCH), on)
+    return route_control(area, node, u16(CONTROL_OPCODE_SET_SWITCH), u32(on))
+}
+
+// parse_switch_on reads the `on` field of a switch request: 1 for true or 1,
+// 0 for false or 0, and -1 when it is missing or anything else.
+// @req GW-API-0004
+fn parse_switch_on(body: string) i32 {
+    let at: i32 = str_index_of(body, "\"on\"")
+    if at < 0 {
+        return -1
+    }
+    let length: u32 = strlen(body)
+    var i: u32 = u32(at) + 4
+    while i < length && (str_at(body, i) == u8(32) || str_at(body, i) == u8(9)) {
+        i = i + 1
+    }
+    if i >= length || str_at(body, i) != u8(58) {
+        return -1
+    }
+    i = i + 1
+    while i < length && (str_at(body, i) == u8(32) || str_at(body, i) == u8(9)) {
+        i = i + 1
+    }
+    var word: string = ""
+    while i < length {
+        let c: u8 = str_at(body, i)
+        if c == u8(44) || c == u8(125) || c == u8(32) || c == u8(9) || c == u8(10) || c == u8(13) {
+            break
+        }
+        word = word + str_from_byte(c)
+        i = i + 1
+    }
+    if word == "true" || word == "1" {
+        return 1
+    }
+    if word == "false" || word == "0" {
+        return 0
+    }
+    return -1
 }
 
 // parse_u32_field reads the unsigned number after a JSON key in a small request
@@ -746,26 +817,4 @@ fn parse_u32_field(body: string, key: string) u32 {
 // parse_interval_ms reads the reporting interval from a request body.
 fn parse_interval_ms(body: string) u32 {
     return parse_u32_field(body, "\"interval_ms\"")
-}
-
-// parse_bool_field reads a JSON boolean (or 0/1) after a key.
-fn parse_bool_field(body: string, key: string) bool {
-    let at: i32 = str_index_of(body, key)
-    if at < 0 {
-        return false
-    }
-    let length: u32 = strlen(body)
-    var i: u32 = u32(at)
-    while i < length && str_at(body, i) != u8(58) {
-        i = i + 1
-    }
-    i = i + 1
-    while i < length && (str_at(body, i) == u8(32) || str_at(body, i) == u8(9)) {
-        i = i + 1
-    }
-    if i + 3 < length && str_at(body, i) == u8(116) && str_at(body, i + 1) == u8(114) &&
-        str_at(body, i + 2) == u8(117) && str_at(body, i + 3) == u8(101) {
-        return true /* "true" */
-    }
-    return i < length && str_at(body, i) == u8(49) /* "1" */
 }

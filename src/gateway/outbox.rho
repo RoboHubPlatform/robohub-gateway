@@ -22,13 +22,22 @@ module gateway.outbox
 // asks for everything after it.
 
 // outbox_start opens the outbox named by OUTBOX_PATH, or the gateway's default.
+// @req GW-0005
 fn outbox_start() bool {
     return gateway_outbox_open(getenv("OUTBOX_PATH"))
 }
 
-// outbox_authorized is whether the caller may read and acknowledge the outbox.
+// outbox_authorized is whether the caller may read the outbox.
 fn outbox_authorized(req: Request) bool {
     return gateway_allowed(req, "read")
+}
+
+// outbox_may_ack is whether the caller may acknowledge it: a change — it moves
+// the caller's cursor and lets the gateway delete what every consumer has — so
+// it needs `gateway:<id>:ack` (or a wildcard), never the read scope alone.
+// @req GW-TEL-0003, GW-API-0001
+fn outbox_may_ack(req: Request) bool {
+    return gateway_allowed(req, "ack")
 }
 
 fn outbox_unauthorized() Response {
@@ -52,6 +61,7 @@ fn outbox_emit_u32(area: u32, node: u32, field_name: string, value: u32, status:
 // outbox_emit_from records a reading with the board that sent it, by the id its
 // session was opened with, so the store keeps it under that board whatever area
 // and node it reports.
+// @req GW-TEL-0001
 fn outbox_emit_from(source: string, area: u32, node: u32, field_name: string, value: f32, status: u32) u32 {
     return gateway_outbox_append_from(source, area, node, field_name, value, status, gateway_wall_time_ms())
 }
@@ -61,6 +71,7 @@ fn outbox_emit_from_u32(source: string, area: u32, node: u32, field_name: string
 }
 
 // outbox_fetch serves everything after the caller's sequence, up to a limit.
+// @req GW-TEL-0003
 fn outbox_fetch(req: Request) Response {
     if !outbox_authorized(req) {
         return outbox_unauthorized()
@@ -75,8 +86,9 @@ fn outbox_fetch(req: Request) Response {
 
 // outbox_ack says the aggregator has committed everything up to seq, which is
 // what lets the gateway prune. The sequence may come in the body or the query.
+// @req GW-TEL-0003
 fn outbox_ack(req: Request) Response {
-    if !outbox_authorized(req) {
+    if !outbox_may_ack(req) {
         return outbox_unauthorized()
     }
     let body: string = request_body(req)

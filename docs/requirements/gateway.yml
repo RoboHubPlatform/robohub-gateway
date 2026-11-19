@@ -1,0 +1,212 @@
+# What the gateway does towards the system requirements: the edge that takes
+# authenticated frames from boards, keeps their readings for Mesh and carries
+# commands back. Written in the R5 backfill from the documentation, the
+# changelog, the code and the smoke tests; proposed until the maintainer
+# approves them.
+level: NODE
+prefix: GW
+title: Gateway
+requirements:
+  - id: GW-0001
+    title: Only authenticated board frames are taken
+    statement: >
+      The gateway shall act on a board's frame from the serial link, an uplink
+      connection, a relay or the HTTP frame bridge only when it is sealed under a
+      live session opened with that board's key and has not been accepted before,
+      and shall drop every other frame, except plain frames on the serial link
+      while ALLOW_PLAIN_FRAMES=1.
+    rationale: A forged or replayed frame must not become a reading or the answer to a command.
+    satisfies: [SYS-0019, SYS-0020]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, ingest]
+
+  - id: GW-0002
+    title: The node manifest decides which boards are let in
+    statement: >
+      With a node manifest present, the gateway shall answer a hello only from a
+      board the manifest lists and does not mark revoked, shall drop the live
+      sessions of a board the manifest stops accepting, and shall take a board's
+      readings only for the area and node the manifest places it at.
+    rationale: A derived key proves a board was keyed for this gateway, not that it still belongs to it or where it sits.
+    satisfies: [SYS-0020, SYS-0021]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, manifest, revocation]
+
+  - id: GW-0003
+    title: A board's key is rotated over its session
+    statement: >
+      When the manifest names a later key epoch for a board, the gateway shall
+      hand the board its new key sealed under the board's current session, and
+      once the board has proven it holds the new key shall refuse the older
+      epoch for that board.
+    rationale: A key that may have been copied is retired without flashing the board.
+    satisfies: [SYS-0022]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, key-rotation]
+
+  - id: GW-0004
+    title: Boards are heard again after a gateway restart
+    statement: >
+      After a restart the gateway shall take back the sessions it held, ask each
+      board that held one to open a new session, and refuse every frame sent
+      before the restart; a board on the serial link shall be heard again within
+      5 s of the gateway starting.
+    rationale: A power cut must not leave boards unheard for up to a session's lifetime, nor open a replay window.
+    satisfies: [SYS-0023]
+    decided_by: [ADR-0001, ADR-0002]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, recovery, restart]
+
+  - id: GW-0005
+    title: Readings are kept in a durable outbox until collected
+    statement: >
+      The gateway shall append every accepted reading to an outbox on disk,
+      numbered by a sequence that continues across restarts, and shall keep each
+      record until every consumer that reads the outbox has acknowledged it or
+      the outbox holds more than OUTBOX_MAX_ROWS records (200000 by default).
+    rationale: Mesh being down or restarted must not leave a hole in a board's history.
+    satisfies: [SYS-0024]
+    decided_by: [ADR-0004]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [telemetry, outbox, recovery]
+
+  - id: GW-0006
+    title: Commands reach a named device and are acknowledged
+    statement: >
+      The gateway shall send a command for a device named by area and node — a
+      sampling rate, a switch, or any opcode and argument — sealed under the
+      session of the board that holds it, or down the uplink of the child gateway
+      that owns its area, and shall answer with the device's acknowledgement.
+    rationale: Switching an output from an application ends here, and the caller must learn whether it happened.
+    satisfies: [SYS-0025]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [commands, outputs]
+
+  - id: GW-0007
+    title: A gateway reports through a parent gateway
+    statement: >
+      A gateway in relay mode shall report its boards' readings to a parent
+      gateway as a board of the parent's mesh, and a parent shall open the frames
+      of a board behind a relay with that board's own key.
+    rationale: Linked meshes report through one master, and a relay must be unable to forge its boards' frames.
+    satisfies: [SYS-0026]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [relay, topology]
+
+  - id: GW-0008
+    title: Every caller presents a keeper token for this gateway
+    statement: >
+      Every route of the gateway's HTTP API except /healthz shall require a token
+      the keeper signed for the audience `gateway`, carrying a scope that names
+      this gateway's id and the kind of access the route needs, and shall answer
+      403 to a caller without it.
+    rationale: There is no static token; a token captured on the network opens one gateway, for minutes.
+    satisfies: [SYS-0029, SYS-0030]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, access]
+
+  - id: GW-0009
+    title: The gateway reports its health and its boards' diagnostics
+    statement: >
+      The gateway shall answer GET /healthz without a token, report its mode,
+      area, uptime and what it has carried at GET /api/v1/diagnostics, and run a
+      board's hardware smoke on request and keep the answer with the device.
+    rationale: Mesh and a person must be able to tell a dead gateway from a quiet board.
+    satisfies: [SYS-0039, SYS-0050]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [observability]
+
+  - id: GW-0010
+    title: Network devices are registered, polled and switched
+    statement: >
+      The gateway shall register a network device under a stable identity, poll
+      and switch an HTTP device on request, and record the device's state and
+      power in the outbox under the gateway's area.
+    rationale: A plug that is not a board still feeds the same history and is switched the same way.
+    satisfies: [SYS-0024, SYS-0025, SYS-0051]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [devices]
+
+  - id: GW-0011
+    title: The gateway shows what it hears
+    statement: >
+      The gateway shall serve a page of its mode, area, uptime, devices and
+      latest values with a history of the last frames, export that history as
+      CSV, and stream every valid reading to a UDP collector.
+    rationale: Bringing up a board needs to see its frames without Mesh in between.
+    satisfies: [SYS-0039]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [observability, history]
+
+  - id: GW-0012
+    title: The gateway's secrets stay owner-only
+    statement: >
+      The gateway shall derive each board's key from its gateway key rather than
+      store it, and shall write its sessions, counters and key status only to
+      files readable by its own user.
+    rationale: Whoever reads the session file or a board's key can impersonate the board.
+    satisfies: [SYS-0033]
+    status: proposed
+    verification: inspection
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, secrets]
+
+  - id: GW-0013
+    title: The API is served over TLS when given a certificate
+    statement: >
+      With both RHO_TLS_CERT and RHO_TLS_KEY set, the gateway shall serve its HTTP API over TLS only; with only one of them set, or with a pair it cannot load, it shall not start rather than serve plain HTTP.
+    rationale: The tokens Mesh presents must not cross a network in the clear.
+    satisfies: [SYS-0030]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [security, tls]
+
+  - id: GW-0014
+    title: The latest reading of each device is served
+    statement: >
+      The gateway shall keep the latest values of every device a reading has
+      come from, keyed by its area and node, and serve them at GET /api/v1/nodes
+      and the latest temperature, power and state readings at their own routes.
+    rationale: Mesh and a person read the current state of a board, including a switch's real state, from what the board reported.
+    satisfies: [SYS-0025]
+    status: proposed
+    verification: test
+    owner: maintainer
+    changed: 2026-11-19
+    tags: [telemetry, api]

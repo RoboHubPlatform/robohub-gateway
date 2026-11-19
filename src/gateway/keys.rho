@@ -69,6 +69,7 @@ fn keys_u32_hex(value: u32) string {
 }
 
 // keys_device_key is a board's key at an epoch, as 32 hex digits.
+// @req GW-0003
 fn keys_device_key(uid: string, epoch: u32) string {
     if epoch == 0 {
         return secure_device_key(uid)
@@ -102,6 +103,7 @@ fn keys_confirmed(uid: string) i32 {
 // keys_hello_epoch is the epoch a board's hello authenticates under, or -1 when
 // none it may use does: the manifest's, then — while the board has not
 // confirmed that one — the one before it.
+// @req GW-SEC-0009
 fn keys_hello_epoch(uid: string, message: string, tag: string) i32 {
     let epoch: u32 = manifest_epoch(uid)
     if secure_equal(secure_tag(keys_device_key(uid, epoch), message), tag) {
@@ -142,6 +144,7 @@ fn keys_set_status(uid: string, epoch: u32, status: string) void {
 // keys_confirm makes an epoch a board's confirmed one, and drops the sessions it
 // holds under an older one, other than `keep`: a key taken from the board before
 // the rotation no longer opens or holds a session.
+// @req GW-0003, GW-SEC-0010
 fn keys_confirm(uid: string, epoch: u32, keep: string, why: string) void {
     gateway_state_set("keys.confirmed." + uid, int_to_str(epoch))
     keys_set_status(uid, epoch, "confirmed")
@@ -167,6 +170,7 @@ fn keys_confirm(uid: string, epoch: u32, keep: string, why: string) void {
 // keys_rekey_due sends a REKEY under a session that has just carried a frame,
 // when the session is under an older epoch than the manifest's, the board has
 // not said it cannot rotate to it, and no REKEY is waiting for an answer.
+// @req GW-SEC-0010
 fn keys_rekey_due(sid: string) void {
     let uid: string = secure_sid_uid(sid)
     if uid == "" {
@@ -198,6 +202,7 @@ fn keys_rekey_due(sid: string) void {
 // keys_send_rekey seals a REKEY under one session. The wrap is bound to the
 // frame's own counter, which is the next one the session seals: nothing else is
 // sealed under it between here and the send.
+// @req GW-SEC-0010
 fn keys_send_rekey(sid: string, uid: string, current: u32, target: u32) bool {
     let counter: u32 = gateway_state_get_u32("secure.down." + sid) + 1
     let mask: string = str_slice(rho_hmac_sha256_hex(keys_device_key(uid, current),
@@ -210,6 +215,7 @@ fn keys_send_rekey(sid: string, uid: string, current: u32, target: u32) bool {
 }
 
 // keys_rekey_ack acts on a board's REKEY_ACK that came up its session.
+// @req GW-SEC-0010
 fn keys_rekey_ack(sid: string, payload: string) void {
     let uid: string = secure_sid_uid(sid)
     if uid == "" || strlen(payload) != 12 {
@@ -269,6 +275,7 @@ fn keys_report_path() string {
     return dir + "/rekey.txt"
 }
 
+// @req GW-SEC-0011
 fn keys_write_report() void {
     let path: string = keys_report_path()
     if path == "" {
@@ -309,6 +316,7 @@ fn keys_restore(line: string) void {
 
 // keys_list answers GET /api/v1/keys: each board's epoch in the manifest, the
 // epoch it confirmed, and what last happened to its key.
+// @req GW-SEC-0011
 fn keys_list(req: Request) Response {
     if !gateway_allowed(req, "read") {
         return gateway_denied()
