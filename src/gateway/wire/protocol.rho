@@ -70,6 +70,16 @@ const MESSAGE_ID_CONTROL_REQUEST: u32 = 769
 const MESSAGE_ID_CONTROL_RESPONSE: u32 = 770
 const MESSAGE_ID_DIAG_REQUEST: u32 = 1025
 const MESSAGE_ID_DIAG_RESPONSE: u32 = 1026
+const MESSAGE_ID_HEALTH: u32 = 1027
+
+// ResetReason values.
+const RESET_REASON_UNKNOWN: u32 = 0
+const RESET_REASON_POWER_ON: u32 = 1
+const RESET_REASON_WATCHDOG: u32 = 2
+const RESET_REASON_SOFTWARE: u32 = 3
+const RESET_REASON_BROWN_OUT: u32 = 4
+const RESET_REASON_PIN: u32 = 5
+const RESET_REASON_FAULT: u32 = 6
 
 // NodeStatus values.
 const NODE_STATUS_OK: u32 = 0
@@ -252,6 +262,61 @@ fn telemetry_unmarshal(data: string) Telemetry {
     off = off + 4
     let status: u32 = robohub_v1_get_u32(data, off)
     return Telemetry { device, timestamp_ms, temperature_c, status }
+}
+
+// Health is Health on the wire, the version byte included.
+struct Health {
+    device: DeviceId
+    reset_reason: u32
+    boot_count: u32
+    fault_code: u32
+    fault_task: u16
+    fault_pc: u32
+    fault_uptime_ms: u32
+    firmware_version: u16
+}
+
+// health_valid reports whether a payload is a whole Health of this version.
+fn health_valid(data: string) bool {
+    if strlen(data) < 30 {
+        return false
+    }
+    return u32(str_at(data, 0)) == 1
+}
+
+// health_marshal writes a Health: the version byte and its fields.
+fn health_marshal(value: Health) string {
+    var out: string = str_from_byte(u8(1))
+    out = out + device_id_marshal(value.device)
+    out = out + robohub_v1_put_u32(value.reset_reason)
+    out = out + robohub_v1_put_u32(value.boot_count)
+    out = out + robohub_v1_put_u32(value.fault_code)
+    out = out + robohub_v1_put_u16(value.fault_task)
+    out = out + robohub_v1_put_u32(value.fault_pc)
+    out = out + robohub_v1_put_u32(value.fault_uptime_ms)
+    out = out + robohub_v1_put_u16(value.firmware_version)
+    return out
+}
+
+// health_unmarshal reads a payload this schema's health_valid accepted.
+fn health_unmarshal(data: string) Health {
+    var off: u32 = 1
+    let device: DeviceId = device_id_unmarshal(str_slice(data, off, 5))
+    off = off + 5
+    let reset_reason: u32 = robohub_v1_get_u32(data, off)
+    off = off + 4
+    let boot_count: u32 = robohub_v1_get_u32(data, off)
+    off = off + 4
+    let fault_code: u32 = robohub_v1_get_u32(data, off)
+    off = off + 4
+    let fault_task: u16 = robohub_v1_get_u16(data, off)
+    off = off + 2
+    let fault_pc: u32 = robohub_v1_get_u32(data, off)
+    off = off + 4
+    let fault_uptime_ms: u32 = robohub_v1_get_u32(data, off)
+    off = off + 4
+    let firmware_version: u16 = robohub_v1_get_u16(data, off)
+    return Health { device, reset_reason, boot_count, fault_code, fault_task, fault_pc, fault_uptime_ms, firmware_version }
 }
 
 // GatewayId is GatewayId on the wire, the version byte included.

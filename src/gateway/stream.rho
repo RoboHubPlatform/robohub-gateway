@@ -242,6 +242,74 @@ fn record_state(source: string, message: StateReading) void {
     }
 }
 
+// reset_reason_text is a reset reason as a word a reader keeps
+// (robohub-common's rh_reset_reason_name, PROTO-0007's set).
+fn reset_reason_text(reason: u32) string {
+    if reason == RESET_REASON_POWER_ON {
+        return "power-on"
+    }
+    if reason == RESET_REASON_WATCHDOG {
+        return "watchdog"
+    }
+    if reason == RESET_REASON_SOFTWARE {
+        return "software"
+    }
+    if reason == RESET_REASON_BROWN_OUT {
+        return "brown-out"
+    }
+    if reason == RESET_REASON_PIN {
+        return "reset pin"
+    }
+    if reason == RESET_REASON_FAULT {
+        return "fault"
+    }
+    return "unknown"
+}
+
+// health_json renders one HEALTH report as the object a node's entry carries.
+fn health_json(message: Health, received_at: string) string {
+    var body: string = "{\"reset_reason\":\"" + reset_reason_text(message.reset_reason) +
+        "\",\"reset_code\":" + int_to_str(message.reset_reason) +
+        ",\"boot_count\":" + int_to_str(message.boot_count) +
+        ",\"firmware_version\":" + int_to_str(u32(message.firmware_version)) +
+        ",\"received_at_ms\":" + received_at
+    if message.fault_code != 0 {
+        body = body + ",\"fault\":{\"code\":" + int_to_str(message.fault_code) +
+            ",\"task\":" + int_to_str(u32(message.fault_task)) +
+            ",\"pc\":" + int_to_str(message.fault_pc) +
+            ",\"uptime_ms\":" + int_to_str(message.fault_uptime_ms) + "}"
+    } else {
+        body = body + ",\"fault\":null"
+    }
+    return body + "}"
+}
+
+// handle_health keeps a board's last health report under its device, with the
+// time it arrived, for the node listing; and a reset the board did not choose —
+// the watchdog, or a fault — goes into the outbox as a `reset` event Mesh reads
+// and alerts on (GW-0015).
+// @req GW-0015
+fn handle_health(source: string, payload: string) void {
+    if !health_valid(payload) {
+        return
+    }
+    let message: Health = health_unmarshal(payload)
+    let key: u32 = device_key(u32(message.device.area_id), u32(message.device.node_id))
+    let at: string = gateway_wall_time_ms()
+
+    gateway_node_seen(key)
+    gateway_state_set(device_suffix(key, ".health"), health_json(message, at))
+    gateway_state_set_u32(device_suffix(key, ".health_set"), 1)
+    gateway_state_set_u32("frames", gateway_state_get_u32("frames") + 1)
+
+    if message.reset_reason == RESET_REASON_WATCHDOG || message.reset_reason == RESET_REASON_FAULT {
+        let area: u32 = device_area(key)
+        let node: u32 = device_node(key)
+        // The status is the fault code, so the event says what failed as well.
+        outbox_emit_from_u32(source, area, node, "reset", message.reset_reason, message.fault_code)
+    }
+}
+
 // stream_publish_state renders one PlotJuggler record for a device's state.
 // @req GW-TEL-0006
 fn stream_publish_state(key: u32, message: StateReading) bool {

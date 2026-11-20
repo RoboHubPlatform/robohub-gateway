@@ -149,6 +149,13 @@ fn apply_uplink_frame(encoded: string, connection: u32) void {
         return
     }
 
+    // A child's board's health, carried up as it is.
+    if frame.msg_id == MESSAGE_ID_HEALTH {
+        relay_forward(frame.msg_id, frame.payload)
+        handle_health("", frame.payload)
+        return
+    }
+
     // A response from a child — to a command this gateway routed down — wakes
     // the handler waiting on that transaction, exactly as one from the local
     // link does.
@@ -344,6 +351,10 @@ fn node_reading(key: u32) string {
     // keeping it apart: a device is one record, and a reader wants one.
     if gateway_state_get_u32(device_suffix(key, ".diag_set")) != 0 {
         body = body + ",\"diag\":" + gateway_state_get(device_suffix(key, ".diag"))
+    }
+    // The board's last health report, kept until the next one (GW-0015).
+    if gateway_state_get_u32(device_suffix(key, ".health_set")) != 0 {
+        body = body + ",\"health\":" + gateway_state_get(device_suffix(key, ".health"))
     }
     return body + "}"
 }

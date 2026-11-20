@@ -129,3 +129,9 @@ Bug fixes from the requirements review (same release).
 - `tools/access-smoke.py` checks the acknowledgement's scope (a reader, a token reading this gateway and acknowledging another, a collector, Mesh's wildcard), the addresses a device may and may not be registered at, and a network switch against a stand-in Shelly plug (confirmed, stuck, no status, poll ending the wait, MQTT refused), and that a board's switch answers the state it reached.
 
 Documentation (same release): the outbox's guide and README said an acknowledgement removes what the aggregator committed and the architecture page that the gateway does not remember consumers; it keeps a cursor per consumer and removes a record only once every known consumer has acknowledged it, and `OUTBOX_MAX_ROWS` is its only other bound — nothing is dropped by age. The `SESSION_RESET` cap is spelled out: five requests per restored session, every attempt counted, none after the fifth.
+
+## [0.8.0] - 2026-11-20
+
+- **A board's health is kept and listed (GW-0015).** `HEALTH` (0x0403, PROTO-0007) from an admitted board — held to its own place like a reading — is kept per device with the time it arrived, and `GET /api/v1/nodes` carries it as `health`: the reset reason (word and code), the boot count, the firmware version and the fault record (`null` when there was none). A reset by the watchdog or a fault is appended to the outbox as a `reset` event (value the reason, status the fault code) for Mesh to alert on. A relay carries a board's report up as it carries a reading.
+- The protocol copies know `HEALTH` and `ResetReason`.
+- `tools/smoke.py` checks a watchdog report and a power-on report: both listed, one `reset` event.

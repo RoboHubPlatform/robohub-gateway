@@ -212,7 +212,8 @@ fn relay_announce() void {
 // these names its area and node, so the parent places it without asking.
 fn relay_forward(msg_id: u32, payload: string) void {
     if msg_id == MESSAGE_ID_READING || msg_id == MESSAGE_ID_POWER_READING ||
-        msg_id == MESSAGE_ID_STATE_READING || msg_id == MESSAGE_ID_SENSOR_READING {
+        msg_id == MESSAGE_ID_STATE_READING || msg_id == MESSAGE_ID_SENSOR_READING ||
+        msg_id == MESSAGE_ID_HEALTH {
         ignore_bool_relay(relay_send(msg_id, 0, payload))
     }
 }

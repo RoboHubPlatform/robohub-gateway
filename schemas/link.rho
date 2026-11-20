@@ -50,3 +50,21 @@ message Telemetry {
     temperature_c: f32
     status: NodeStatus
 }
+
+// A board's health, once per boot (PROTO-0007, HEALTH 0x0403): why it last
+// restarted, how many boots since power was applied, and the fault record the
+// boot before left — its code (robohub/health.h rh_fault_code, or the
+// application's own from 0x100), the task the runtime was running (0xFFFF for
+// none), the program counter and the uptime then. A board with no record sends
+// zeros and task 0xFFFF. `firmware_version` is HELLO's, so a report names the
+// image that is reporting.
+message Health {
+    device: DeviceId
+    reset_reason: ResetReason
+    boot_count: u32
+    fault_code: u32
+    fault_task: u16
+    fault_pc: u32
+    fault_uptime_ms: u32
+    firmware_version: u16
+}

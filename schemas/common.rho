@@ -73,6 +73,12 @@ namespace robohub.v1
 // asks for a new session. Its payload is empty, or one reason byte:
 //
 //     SESSION_RESET  [reason(u8)]     1 = the gateway restarted
+//
+// HEALTH is a board's account of its last restart (PROTO-0007): sent once per
+// boot after its session is established, and again when a DIAG_REQUEST asks for
+// it. It is sealed like every L2 message on a network link; a receiver that does
+// not know it drops it, as it drops any unknown message, so HELLO and older
+// gateways are unaffected.
 enum MessageId {
     RELAYED = 19                    // 0x0013, both levels: a board's frame carried by a relay
     REKEY = 20                      // 0x0014, L2, sealed: the gateway gives a board its next key
@@ -89,6 +95,19 @@ enum MessageId {
     CONTROL_RESPONSE = 770          // 0x0302
     DIAG_REQUEST = 1025             // 0x0401
     DIAG_RESPONSE = 1026            // 0x0402
+    HEALTH = 1027                   // 0x0403, L2, sealed: why a board last restarted
+}
+
+// Why a board last restarted, as robohub-common's health contract names it
+// (COMM-0011, robohub/health.h rh_reset_reason); the values are the same.
+enum ResetReason {
+    UNKNOWN = 0
+    POWER_ON = 1
+    WATCHDOG = 2
+    SOFTWARE = 3
+    BROWN_OUT = 4
+    PIN = 5
+    FAULT = 6
 }
 
 enum NodeStatus {

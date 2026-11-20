@@ -210,3 +210,19 @@ requirements:
     owner: maintainer
     changed: 2026-11-19
     tags: [telemetry, api]
+
+  - id: GW-0015
+    title: The gateway keeps each board's last health report
+    statement: >
+      The gateway shall accept `HEALTH` from an admitted board, keep the last one
+      per board with the time it arrived, include it in the board's entry of its
+      API (reset reason, boot count, fault record, firmware version), and record a
+      reset whose reason is watchdog or fault as an event Mesh reads.
+    rationale: Mesh shows and alerts on a board's health from what the gateway heard (MESH requirement in robohub-mesh); a report lost between two polls must not vanish.
+    satisfies: [SYS-0070, SYS-0052]
+    decided_by: [robohub:ADR-0021]
+    status: approved
+    verification: test
+    owner: maintainer
+    changed: 2026-11-20
+    tags: [health, api]

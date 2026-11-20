@@ -127,6 +127,11 @@ fn ingest_opened(frame: TransportFrame, source: string, sid: string) void {
         if frame.msg_id == MESSAGE_ID_SENSOR_READING {
             handle_sensor_reading(source, frame.payload)
         }
+        // A board's health, once per boot: it names the board's own device, so
+        // it is held to the same place a reading is.
+        if frame.msg_id == MESSAGE_ID_HEALTH && manifest_reading_allowed(sid, frame.payload) {
+            handle_health(source, frame.payload)
+        }
         return
     }
 

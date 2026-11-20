@@ -129,6 +129,15 @@ def state_reading_frame(area: int, node: int, kind: int, status: int, valid: int
     return frame(0x0203, 0, payload)
 
 
+def health_frame(area: int, node: int, reason: int, boot_count: int, fault_code: int,
+                 fault_task: int, fault_pc: int, fault_uptime_ms: int, firmware: int) -> bytes:
+    # Health (PROTO-0007, 0x0403): version, device, reset reason (u32), boot
+    # count, fault code, fault task (u16), fault pc, fault uptime, firmware (u16).
+    payload = b"\x01" + device(area, node) + struct.pack(
+        "<IIIHIIH", reason, boot_count, fault_code, fault_task, fault_pc, fault_uptime_ms, firmware)
+    return frame(0x0403, 0, payload)
+
+
 def parse_frame(raw: bytes):
     # raw is COBS-encoded without the delimiter; decode it.
     out = bytearray()
@@ -515,6 +524,35 @@ def main():
     if listed.get((AREA, 12), {}).get("switch_state") != 1 or \
        listed.get((AREA, 12), {}).get("kind") != 6:
         failures.append(f"the switch is missing from the listing: {body}")
+
+    # 2b. Health (GW-0015): a board that restarted on its watchdog says so once;
+    # the listing keeps the last report, and the outbox carries a `reset` event.
+    os.write(master, health_frame(AREA, 12, 2, 5, 2, 3, 0x10001234, 61000, 7))
+    os.write(master, health_frame(AREA, 13, 1, 1, 0, 0xFFFF, 0, 0, 7))
+    time.sleep(0.5)
+    status, body = http("GET", "/api/v1/nodes")
+    print("GET nodes (health):", status, body)
+    try:
+        listed = {(n["area_id"], n["node_id"]): n for n in json.loads(body)}
+    except Exception:
+        listed = {}
+    health = listed.get((AREA, 12), {}).get("health") or {}
+    fault = health.get("fault") or {}
+    if health.get("reset_reason") != "watchdog" or health.get("boot_count") != 5 or \
+       health.get("firmware_version") != 7 or fault.get("code") != 2 or fault.get("task") != 3 or \
+       fault.get("pc") != 0x10001234 or fault.get("uptime_ms") != 61000 or not health.get("received_at_ms"):
+        failures.append(f"the health report is missing from the listing: {body}")
+    calm = listed.get((AREA, 13), {}).get("health") or {}
+    if calm.get("reset_reason") != "power-on" or calm.get("fault", "absent") is not None:
+        failures.append(f"a power-on report is not listed as one: {body}")
+    status, body = http("GET", "/api/v1/telemetry/outbox?after=0&limit=1000")
+    print("GET outbox (health):", status, body[:400])
+    try:
+        resets = [e for e in json.loads(body) if e.get("field") == "reset"]
+    except Exception:
+        resets = []
+    if [(e.get("area_id"), e.get("node_id"), e.get("value"), e.get("status")) for e in resets] != [(AREA, 12, 2, 2)]:
+        failures.append(f"one reset event for the watchdog reset, none for the power-on: {body[:400]}")
 
     # 3. Control: POST sampling-rate, answer the gateway's 0x0301 with a 0x0302.
     import threading
