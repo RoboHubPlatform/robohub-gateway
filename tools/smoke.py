@@ -355,6 +355,7 @@ def main():
         # The sections below drive plain frames, as boards being reflashed send;
         # the sealed path is driven at the end.
         "ALLOW_PLAIN_FRAMES": "1",
+        "GATEWAY_UPDATE_OUTCOME_MS": "1500",
     })
     proc = subprocess.Popen([BIN], env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
@@ -594,6 +595,10 @@ def main():
                     board_seen["offers"].append(uid)
                     if uid == 502:
                         continue  # this board does not answer: the update waits, and is cancelled
+                    if expect is not None and expect["id"] == uid and expect.get("ended"):
+                        board_seen["asked_again"] = board_seen.get("asked_again", 0) + 1
+                        os.write(master, status_frame(uid, expect["ended"], 0, 0, version=2, slot=1))
+                        continue
                     if expect is None or expect["id"] != uid:
                         expect = {"id": uid, "size": size, "digest": digest, "chunk": chunk, "next": 0, "since": 0}
                         board_seen["image"] = bytearray()
@@ -615,9 +620,9 @@ def main():
                     if len(board_seen["image"]) == expect["size"]:
                         ok = hashlib.sha256(bytes(board_seen["image"])).digest() == expect["digest"]
                         os.write(master, status_frame(uid, 4 if ok else 7, 0 if ok else 8, expect["next"]))
-                        time.sleep(0.3)
-                        if ok:
-                            os.write(master, status_frame(uid, 5, 0, 0, version=2, slot=1))
+                        # The board reboots into it, and its `confirmed` is lost
+                        # with its link: the gateway asks again by offering it.
+                        expect["ended"] = 5 if ok else None
                     elif expect["since"] >= 4:
                         expect["since"] = 0
                         os.write(master, status_frame(uid, 3, 0, expect["next"]))
@@ -657,6 +662,8 @@ def main():
         failures.append(f"the update reaches confirmed: {state}")
     if bytes(board_seen["image"]) != image or board_seen["dropped"] != 1:
         failures.append("the board received the whole image, the lost chunk sent again")
+    if board_seen.get("asked_again", 0) < 1:
+        failures.append("after verified with no outcome, the gateway offered the update again to hear how it ended")
     status, body = http("GET", "/api/v1/nodes")
     listed = {(n["area_id"], n["node_id"]): n for n in json.loads(body)} if status == 200 else {}
     if (listed.get((AREA, 12), {}).get("update") or {}).get("state") != "confirmed":

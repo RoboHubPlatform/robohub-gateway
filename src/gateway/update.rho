@@ -29,7 +29,10 @@ module gateway.update
 // the last index acknowledged; no answer for 10 s while sending offers again, which
 // the board answers with the index to resume at. One update per board at a time.
 // The image is kept in memory until the board has verified it: a gateway that
-// restarts forgets an update, and the board drops it after a minute.
+// restarts forgets an update, and the board drops it after a minute. After
+// `verified`, an outcome that does not come within GATEWAY_UPDATE_OUTCOME_MS (15 s)
+// is asked for by offering the update again, which the board answers with how it
+// ended; after 20 such offers the update is failed.
 //
 // What the board says also goes to the outbox as an `update` event (value the
 // state, status the reason), for Mesh.
@@ -38,6 +41,8 @@ const UPDATE_WINDOW: u32 = 4
 const UPDATE_RETRY_MS: u32 = 2000
 const UPDATE_RESUME_MS: u32 = 10000
 const UPDATE_OFFERS: u32 = 5
+const UPDATE_OUTCOME_MS: u32 = 15000
+const UPDATE_OUTCOME_OFFERS: u32 = 20
 const UPDATE_OFFER_SIZE: u32 = 122
 
 const UPDATE_STATE_ACCEPTED: u32 = 1
@@ -47,6 +52,16 @@ const UPDATE_STATE_VERIFIED: u32 = 4
 const UPDATE_STATE_CONFIRMED: u32 = 5
 const UPDATE_STATE_ROLLED_BACK: u32 = 6
 const UPDATE_STATE_FAILED: u32 = 7
+
+// update_outcome_ms is how long after `verified` the gateway waits for the
+// outcome before it offers the update again (GATEWAY_UPDATE_OUTCOME_MS).
+fn update_outcome_ms() u32 {
+    let value: u32 = u32(int_from_str(getenv("GATEWAY_UPDATE_OUTCOME_MS")))
+    if value == 0 {
+        return UPDATE_OUTCOME_MS
+    }
+    return value
+}
 
 fn update_key_value(key: u32, name: string) string {
     return gateway_state_get(device_suffix(key, ".update." + name))
@@ -283,6 +298,20 @@ fn update_tick() void {
             }
             continue
         }
+        if state == "verified" {
+            // The board rebooted into the image and its outcome has not come:
+            // its report may have gone while its link was down. The same offer
+            // again, which a board answers with how the update ended.
+            if now - update_key_u32(key, "last_ms") >= update_outcome_ms() {
+                if update_key_u32(key, "offers") >= UPDATE_OUTCOME_OFFERS {
+                    update_finish(key, "failed", 10)
+                } else {
+                    update_set_u32(key, "last_ms", now)
+                    update_send_offer(key)
+                }
+            }
+            continue
+        }
         if state != "sending" {
             continue
         }
@@ -364,6 +393,7 @@ fn handle_update_status(source: string, payload: string) void {
         update_set(key, "state", "verified")
         update_set_u32(key, "next", update_chunks(key))
         update_set(key, "image", "")
+        update_set_u32(key, "offers", 0)
         return
     }
     update_finish(key, update_state_word(status.state), status.reason)
