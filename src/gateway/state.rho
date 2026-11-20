@@ -356,6 +356,11 @@ fn node_reading(key: u32) string {
     if gateway_state_get_u32(device_suffix(key, ".health_set")) != 0 {
         body = body + ",\"health\":" + gateway_state_get(device_suffix(key, ".health"))
     }
+    // An update carried to it, while it lasts and after (GW-0016).
+    let update: string = update_json(key)
+    if update != "" {
+        body = body + ",\"update\":" + update
+    }
     return body + "}"
 }
 

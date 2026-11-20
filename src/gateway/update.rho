@@ -1,0 +1,370 @@
+//
+// @file update.rho
+// @brief Firmware updates carried to a board: the offer, the chunks with up to four in flight, the board's answers, and the update's state in the API.
+//
+// @module gateway.update
+// @project robohub-gateway
+// @author Aurel Miron
+// @date 2026-11-20
+//
+// SPDX-License-Identifier: MIT
+//
+
+module gateway.update
+
+// Mesh builds an image, writes its update manifest and signs it with the mesh's
+// update key; the gateway carries both to the board and says how far it got
+// (GW-0016, robohub ADR-0022). The gateway need not be trusted for it: the board
+// checks the manifest's signature with the key compiled into its firmware.
+//
+//   POST   /api/v1/nodes/{area}/{node}/update?offer=<hex>   the image is the body
+//   GET    /api/v1/nodes/{area}/{node}/update               where it stands
+//   DELETE /api/v1/nodes/{area}/{node}/update               cancel it
+//
+// The offer is UPDATE_OFFER's payload as Mesh signed it (PROTO-0008); the gateway
+// reads from it only the update id, the size and the chunk size. It sends the
+// offer, then the chunks with up to four in flight, and moves on as the board's
+// UPDATE_STATUS says: the next index it expects, verified, confirmed, rolled back,
+// refused or failed. No answer for 2 s sends the offer again, or the chunks from
+// the last index acknowledged; no answer for 10 s while sending offers again, which
+// the board answers with the index to resume at. One update per board at a time.
+// The image is kept in memory until the board has verified it: a gateway that
+// restarts forgets an update, and the board drops it after a minute.
+//
+// What the board says also goes to the outbox as an `update` event (value the
+// state, status the reason), for Mesh.
+
+const UPDATE_WINDOW: u32 = 4
+const UPDATE_RETRY_MS: u32 = 2000
+const UPDATE_RESUME_MS: u32 = 10000
+const UPDATE_OFFERS: u32 = 5
+const UPDATE_OFFER_SIZE: u32 = 122
+
+const UPDATE_STATE_ACCEPTED: u32 = 1
+const UPDATE_STATE_REFUSED: u32 = 2
+const UPDATE_STATE_RECEIVING: u32 = 3
+const UPDATE_STATE_VERIFIED: u32 = 4
+const UPDATE_STATE_CONFIRMED: u32 = 5
+const UPDATE_STATE_ROLLED_BACK: u32 = 6
+const UPDATE_STATE_FAILED: u32 = 7
+
+fn update_key_value(key: u32, name: string) string {
+    return gateway_state_get(device_suffix(key, ".update." + name))
+}
+
+fn update_key_u32(key: u32, name: string) u32 {
+    return gateway_state_get_u32(device_suffix(key, ".update." + name))
+}
+
+fn update_set(key: u32, name: string, value: string) void {
+    gateway_state_set(device_suffix(key, ".update." + name), value)
+}
+
+fn update_set_u32(key: u32, name: string, value: u32) void {
+    gateway_state_set_u32(device_suffix(key, ".update." + name), value)
+}
+
+// The boards with an update under way, as "key,key,".
+fn update_active() string {
+    return gateway_state_get("updates.active")
+}
+
+fn update_is_active(key: u32) bool {
+    return str_index_of("," + update_active(), "," + int_to_str(key) + ",") >= 0
+}
+
+fn update_activate(key: u32) void {
+    if !update_is_active(key) {
+        gateway_state_set("updates.active", update_active() + int_to_str(key) + ",")
+    }
+}
+
+fn update_deactivate(key: u32) void {
+    let list: string = "," + update_active()
+    let item: string = "," + int_to_str(key) + ","
+    let at: i32 = str_index_of(list, item)
+    if at < 0 {
+        return
+    }
+    let rest: string = str_slice(list, 0, u32(at)) + "," +
+        str_slice(list, u32(at) + strlen(item), strlen(list) - u32(at) - strlen(item))
+    gateway_state_set("updates.active", str_slice(rest, 1, strlen(rest) - 1))
+}
+
+fn update_state_word(state: u32) string {
+    if state == UPDATE_STATE_ACCEPTED { return "sending" }
+    if state == UPDATE_STATE_REFUSED { return "refused" }
+    if state == UPDATE_STATE_RECEIVING { return "sending" }
+    if state == UPDATE_STATE_VERIFIED { return "verified" }
+    if state == UPDATE_STATE_CONFIRMED { return "confirmed" }
+    if state == UPDATE_STATE_ROLLED_BACK { return "rolled_back" }
+    if state == UPDATE_STATE_FAILED { return "failed" }
+    return "unknown"
+}
+
+// update_reason_word is an UpdateReason as a word a person reads.
+fn update_reason_word(reason: u32) string {
+    if reason == 1 { return "signature" }
+    if reason == 2 { return "other board" }
+    if reason == 3 { return "downgrade" }
+    if reason == 4 { return "too large" }
+    if reason == 5 { return "not updatable" }
+    if reason == 6 { return "busy" }
+    if reason == 7 { return "not provisioned" }
+    if reason == 8 { return "hash" }
+    if reason == 9 { return "cancelled" }
+    if reason == 10 { return "timeout" }
+    if reason == 11 { return "write" }
+    if reason == 12 { return "bad offer" }
+    return ""
+}
+
+// update_send seals a message for a board as a command is sealed: under the
+// session of the board placed there, else under the serial link's session (plain
+// only where ALLOW_PLAIN_FRAMES allows it).
+fn update_send(key: u32, msg_id: u32, payload: string) bool {
+    let sid: string = manifest_device_sid(device_area(key), device_node(key))
+    if sid != "" {
+        return secure_send(sid, msg_id, 0, payload)
+    }
+    let encoded: string = secure_frame_down(msg_id, 0, payload)
+    if encoded == "" {
+        return false
+    }
+    return gateway_serial_write(encoded)
+}
+
+fn update_chunks(key: u32) u32 {
+    let size: u32 = update_key_u32(key, "size")
+    let chunk: u32 = update_key_u32(key, "chunk")
+    if chunk == 0 {
+        return 0
+    }
+    return (size + chunk - 1) / chunk
+}
+
+fn update_send_offer(key: u32) void {
+    update_set_u32(key, "offers", update_key_u32(key, "offers") + 1)
+    update_set_u32(key, "sent_ms", gateway_now_ms())
+    ignore_bool_update(update_send(key, MESSAGE_ID_UPDATE_OFFER, update_key_value(key, "offer")))
+}
+
+fn ignore_bool_update(value: bool) void {
+}
+
+fn update_send_chunk(key: u32, index: u32) bool {
+    let chunk: u32 = update_key_u32(key, "chunk")
+    let size: u32 = update_key_u32(key, "size")
+    let at: u32 = index * chunk
+    var n: u32 = chunk
+    if size - at < chunk {
+        n = size - at
+    }
+    let payload: string = robohub_v1_put_u32(update_key_u32(key, "id")) + robohub_v1_put_u32(index) +
+        str_slice(update_key_value(key, "image"), at, n)
+    return update_send(key, MESSAGE_ID_UPDATE_CHUNK, payload)
+}
+
+// update_json is an update's state, for its resource and the board's entry.
+fn update_json(key: u32) string {
+    if update_key_value(key, "state") == "" {
+        return ""
+    }
+    return "{\"id\":" + int_to_str(update_key_u32(key, "id")) +
+        ",\"state\":\"" + update_key_value(key, "state") +
+        "\",\"reason\":\"" + update_reason_word(update_key_u32(key, "reason")) +
+        "\",\"next\":" + int_to_str(update_key_u32(key, "next")) +
+        ",\"chunks\":" + int_to_str(update_chunks(key)) +
+        ",\"size\":" + int_to_str(update_key_u32(key, "size")) +
+        ",\"running_version\":" + int_to_str(update_key_u32(key, "running_version")) +
+        ",\"started_at_ms\":" + update_key_value(key, "started") +
+        ",\"updated_at_ms\":" + update_key_value(key, "updated") + "}"
+}
+
+fn update_finish(key: u32, state: string, reason: u32) void {
+    update_set(key, "state", state)
+    update_set_u32(key, "reason", reason)
+    update_set(key, "image", "")
+    update_set(key, "updated", gateway_wall_time_ms())
+    update_deactivate(key)
+}
+
+// @req GW-0016
+fn update_start(req: Request) Response {
+    if !gateway_allowed(req, "command") {
+        return gateway_denied()
+    }
+    let area: u32 = int_from_str(param(req, "area"))
+    let node: u32 = int_from_str(param(req, "node"))
+    if area == 0 {
+        return gateway_error(400, "a device is an area and a node, and the area is required")
+    }
+    let key: u32 = device_key(area, node)
+    let offer: string = secure_bytes(request_query_param(req, "offer"))
+    if strlen(offer) != UPDATE_OFFER_SIZE || u32(str_at(offer, 0)) != 1 || u32(str_at(offer, 1)) != 1 {
+        return gateway_error(400, "offer is UPDATE_OFFER's payload in hex: 122 bytes, as Mesh signed it")
+    }
+    let image: string = request_body(req)
+    let size: u32 = robohub_v1_get_u32(offer, 20)
+    let chunk: u32 = u32(robohub_v1_get_u16(offer, 56))
+    if strlen(image) != size || size == 0 || chunk == 0 {
+        return gateway_error(400, "the body is the image, as long as the manifest says (" + int_to_str(size) + " bytes)")
+    }
+    if update_is_active(key) {
+        return gateway_error(409, "an update for this board is under way; cancel it first")
+    }
+    update_set_u32(key, "id", robohub_v1_get_u32(offer, 2))
+    update_set_u32(key, "size", size)
+    update_set_u32(key, "chunk", chunk)
+    update_set(key, "offer", offer)
+    update_set(key, "image", image)
+    update_set(key, "state", "offered")
+    update_set_u32(key, "reason", 0)
+    update_set_u32(key, "next", 0)
+    update_set_u32(key, "sent", 0)
+    update_set_u32(key, "offers", 0)
+    update_set_u32(key, "last_ms", gateway_now_ms())
+    update_set(key, "started", gateway_wall_time_ms())
+    update_set(key, "updated", gateway_wall_time_ms())
+    gateway_node_seen(key)
+    update_activate(key)
+    update_send_offer(key)
+    return json(202, update_json(key))
+}
+
+// @req GW-0016
+fn update_get(req: Request) Response {
+    if !gateway_allowed(req, "read") {
+        return gateway_denied()
+    }
+    let key: u32 = device_key(int_from_str(param(req, "area")), int_from_str(param(req, "node")))
+    let body: string = update_json(key)
+    if body == "" {
+        return gateway_error(404, "no update for this board")
+    }
+    return json(200, body)
+}
+
+// @req GW-0016
+fn update_cancel(req: Request) Response {
+    if !gateway_allowed(req, "command") {
+        return gateway_denied()
+    }
+    let key: u32 = device_key(int_from_str(param(req, "area")), int_from_str(param(req, "node")))
+    if !update_is_active(key) {
+        return gateway_error(404, "no update under way for this board")
+    }
+    let payload: string = str_from_byte(u8(1)) + robohub_v1_put_u32(update_key_u32(key, "id"))
+    ignore_bool_update(update_send(key, MESSAGE_ID_UPDATE_CANCEL, payload))
+    update_finish(key, "cancelled", 9)
+    return json(200, update_json(key))
+}
+
+// update_tick drives every update under way; the background loop calls it.
+// @req GW-0016
+fn update_tick() void {
+    var rest: string = update_active()
+    let now: u32 = gateway_now_ms()
+    while rest != "" {
+        let at: i32 = str_index_of(rest, ",")
+        if at < 0 {
+            return
+        }
+        let key: u32 = int_from_str(str_slice(rest, 0, u32(at)))
+        rest = str_slice(rest, u32(at) + 1, strlen(rest) - u32(at) - 1)
+        let state: string = update_key_value(key, "state")
+        if state == "offered" {
+            if now - update_key_u32(key, "sent_ms") >= UPDATE_RETRY_MS {
+                if update_key_u32(key, "offers") >= UPDATE_OFFERS {
+                    update_finish(key, "failed", 10)
+                } else {
+                    update_send_offer(key)
+                }
+            }
+            continue
+        }
+        if state != "sending" {
+            continue
+        }
+        let last: u32 = update_key_u32(key, "last_ms")
+        if now - last >= UPDATE_RESUME_MS {
+            // The link went away: offer again, and the board says where to resume.
+            update_set(key, "state", "offered")
+            update_set_u32(key, "offers", 0)
+            update_set_u32(key, "last_ms", now)
+            update_send_offer(key)
+            continue
+        }
+        var next: u32 = update_key_u32(key, "next")
+        var sent: u32 = update_key_u32(key, "sent")
+        if sent > next && now - last >= UPDATE_RETRY_MS && now - update_key_u32(key, "rewind_ms") >= UPDATE_RETRY_MS {
+            // Nothing heard: what was in flight is sent again.
+            sent = next
+            update_set_u32(key, "rewind_ms", now)
+        }
+        let chunks: u32 = update_chunks(key)
+        while sent < chunks && sent < next + UPDATE_WINDOW {
+            if !update_send_chunk(key, sent) {
+                break
+            }
+            sent = sent + 1
+        }
+        update_set_u32(key, "sent", sent)
+    }
+}
+
+// handle_update_status is a board's UPDATE_STATUS: the update it names, among
+// those under way here, moves on.
+// @req GW-0016
+fn handle_update_status(source: string, payload: string) void {
+    if !update_status_valid(payload) {
+        return
+    }
+    let status: UpdateStatus = update_status_unmarshal(payload)
+    var rest: string = update_active()
+    var key: u32 = 0
+    var found: bool = false
+    while rest != "" {
+        let at: i32 = str_index_of(rest, ",")
+        if at < 0 {
+            break
+        }
+        let candidate: u32 = int_from_str(str_slice(rest, 0, u32(at)))
+        rest = str_slice(rest, u32(at) + 1, strlen(rest) - u32(at) - 1)
+        if update_key_u32(candidate, "id") == status.update_id {
+            key = candidate
+            found = true
+        }
+    }
+    if !found {
+        return
+    }
+    let now: u32 = gateway_now_ms()
+    update_set_u32(key, "last_ms", now)
+    update_set_u32(key, "running_version", u32(status.running_version))
+    update_set(key, "updated", gateway_wall_time_ms())
+    outbox_emit_from_u32(source, device_area(key), device_node(key), "update", status.state, status.reason)
+    if status.state == UPDATE_STATE_ACCEPTED || status.state == UPDATE_STATE_RECEIVING {
+        let sent: u32 = update_key_u32(key, "sent")
+        if update_key_value(key, "state") == "offered" || status.state == UPDATE_STATE_ACCEPTED {
+            // Accepted, or accepted again after a lost link: from where it says.
+            update_set_u32(key, "sent", status.next_index)
+        } else if status.next_index < sent && now - update_key_u32(key, "rewind_ms") >= 300 {
+            // A chunk was lost: back to the first it does not have.
+            update_set_u32(key, "sent", status.next_index)
+            update_set_u32(key, "rewind_ms", now)
+        }
+        update_set_u32(key, "next", status.next_index)
+        update_set(key, "state", "sending")
+        return
+    }
+    if status.state == UPDATE_STATE_VERIFIED {
+        // Whole and checked: the image is not needed again; the board boots it
+        // once and says whether it kept it.
+        update_set(key, "state", "verified")
+        update_set_u32(key, "next", update_chunks(key))
+        update_set(key, "image", "")
+        return
+    }
+    update_finish(key, update_state_word(status.state), status.reason)
+}

@@ -3,7 +3,7 @@
 # the root page, the streamed datagrams and the uplink.
 name: gateway
 suites:
-  # @verifies GW-0006, GW-0009, GW-0011, GW-0014, GW-0015, PROTO-0007, GW-API-0002, GW-API-0003, GW-TEL-0004, GW-TEL-0005, GW-TEL-0006, GW-LINK-0001, GW-LINK-0003, GW-SEC-0002, GW-SEC-0006, GW-SEC-0012
+  # @verifies GW-0006, GW-0009, GW-0011, GW-0014, GW-0015, GW-0016, PROTO-0007, GW-API-0002, GW-API-0003, GW-TEL-0004, GW-TEL-0005, GW-TEL-0006, GW-LINK-0001, GW-LINK-0003, GW-SEC-0002, GW-SEC-0006, GW-SEC-0012
   - name: gateway-smoke
     kind: command
     tags: [smoke]

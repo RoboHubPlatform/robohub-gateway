@@ -554,8 +554,142 @@ def main():
     if [(e.get("area_id"), e.get("node_id"), e.get("value"), e.get("status")) for e in resets] != [(AREA, 12, 2, 2)]:
         failures.append(f"one reset event for the watchdog reset, none for the power-on: {body[:400]}")
 
+    # 2c. An update carried to a board (GW-0016): a board on the pty takes the
+    # offer, loses a chunk and gets it again, verifies the image and confirms it;
+    # a second update is cancelled. The board here is a stand-in: the gateway
+    # does not check the manifest's signature, the board does.
+    import hashlib
+    image = bytes((i * 31 + (i >> 4)) & 0xFF for i in range(5000))
+
+    def offer_hex(update_id, data, chunk=192):
+        manifest = struct.pack("<BI8sHII32sH", 1, update_id, b"\x01" * 8, 2, 1, len(data),
+                               hashlib.sha256(data).digest(), chunk)
+        return (b"\x01" + manifest + b"\x5a" * 64).hex()
+
+    def status_frame(update_id, state, reason, nxt, version=1, slot=0):
+        return frame(0x0503, 0, struct.pack("<BIIIIHB", 1, update_id, state, reason, nxt, version, slot))
+
+    board_seen = {"offers": [], "chunks": 0, "cancels": [], "dropped": 0, "image": bytearray()}
+    board_stop = threading.Event()
+
+    def update_board():
+        buf = bytearray()
+        expect = None
+        while not board_stop.is_set():
+            try:
+                data = os.read(master, 4096)
+            except BlockingIOError:
+                time.sleep(0.005)
+                continue
+            buf += data
+            while 0 in buf:
+                raw = bytes(buf[:buf.index(0)])
+                del buf[:buf.index(0) + 1]
+                try:
+                    msg_id, _tx, payload = parse_frame(raw)
+                except Exception:  # noqa: BLE001
+                    continue
+                if msg_id == 0x0501:
+                    _ov, _mv, uid, _u, _fw, _sec, size, digest, chunk = struct.unpack("<BBI8sHII32sH", payload[:58])
+                    board_seen["offers"].append(uid)
+                    if uid == 502:
+                        continue  # this board does not answer: the update waits, and is cancelled
+                    if expect is None or expect["id"] != uid:
+                        expect = {"id": uid, "size": size, "digest": digest, "chunk": chunk, "next": 0, "since": 0}
+                        board_seen["image"] = bytearray()
+                    os.write(master, status_frame(uid, 1, 0, expect["next"]))
+                elif msg_id == 0x0502 and expect is not None:
+                    uid, index = struct.unpack("<II", payload[:8])
+                    board_seen["chunks"] += 1
+                    if uid != expect["id"]:
+                        continue
+                    if index == 7 and board_seen["dropped"] == 0:
+                        board_seen["dropped"] = 1      # lost on the wire
+                        continue
+                    if index != expect["next"]:
+                        os.write(master, status_frame(uid, 3, 0, expect["next"]))
+                        continue
+                    board_seen["image"] += payload[8:]
+                    expect["next"] += 1
+                    expect["since"] += 1
+                    if len(board_seen["image"]) == expect["size"]:
+                        ok = hashlib.sha256(bytes(board_seen["image"])).digest() == expect["digest"]
+                        os.write(master, status_frame(uid, 4 if ok else 7, 0 if ok else 8, expect["next"]))
+                        time.sleep(0.3)
+                        if ok:
+                            os.write(master, status_frame(uid, 5, 0, 0, version=2, slot=1))
+                    elif expect["since"] >= 4:
+                        expect["since"] = 0
+                        os.write(master, status_frame(uid, 3, 0, expect["next"]))
+                elif msg_id == 0x0504:
+                    board_seen["cancels"].append(struct.unpack("<I", payload[1:5])[0])
+
+    board_thread = threading.Thread(target=update_board, daemon=True)
+    board_thread.start()
+    status, body = http("POST", f"/api/v1/nodes/{AREA}/12/update?offer=00", "x")
+    if status != 400:
+        failures.append(f"a malformed offer is refused: {status} {body}")
+    status, body = http("POST", f"/api/v1/nodes/{AREA}/12/update?offer={offer_hex(500, image)}", image[:100].decode("latin-1"))
+    if status != 400:
+        failures.append(f"an image shorter than its manifest is refused: {status} {body}")
+    conn = httpclient.HTTPConnection(HOST, HTTP_PORT, timeout=10)
+    conn.request("POST", f"/api/v1/nodes/{AREA}/12/update?offer={offer_hex(500, image)}", body=image,
+                 headers={"Content-Type": "application/octet-stream", "Authorization": f"Bearer {TOKEN}"})
+    resp = conn.getresponse()
+    started = resp.read().decode()
+    print("UPDATE:", resp.status, started)
+    if resp.status != 202:
+        failures.append(f"an update is taken: {resp.status} {started}")
+    status, body = http("POST", f"/api/v1/nodes/{AREA}/12/update?offer={offer_hex(501, image)}", "x" * 10)
+    deadline = time.time() + 20
+    state = {}
+    while time.time() < deadline:
+        status, body = http("GET", f"/api/v1/nodes/{AREA}/12/update")
+        try:
+            state = json.loads(body)
+        except Exception:
+            state = {}
+        if state.get("state") in ("confirmed", "failed", "refused", "rolled_back"):
+            break
+        time.sleep(0.2)
+    print("UPDATE state:", state, "board saw", board_seen["chunks"], "chunks,", len(board_seen["offers"]), "offers")
+    if state.get("state") != "confirmed" or state.get("running_version") != 2 or state.get("next") != 27:
+        failures.append(f"the update reaches confirmed: {state}")
+    if bytes(board_seen["image"]) != image or board_seen["dropped"] != 1:
+        failures.append("the board received the whole image, the lost chunk sent again")
+    status, body = http("GET", "/api/v1/nodes")
+    listed = {(n["area_id"], n["node_id"]): n for n in json.loads(body)} if status == 200 else {}
+    if (listed.get((AREA, 12), {}).get("update") or {}).get("state") != "confirmed":
+        failures.append(f"the board's entry carries its update: {body[:300]}")
+    status, body = http("GET", "/api/v1/telemetry/outbox?after=0&limit=1000")
+    updates = [e for e in json.loads(body) if e.get("field") == "update"] if status == 200 else []
+    if not updates or updates[-1].get("value") != 5:
+        failures.append(f"the board's answers reach the outbox as update events: {updates[-3:]}")
+    # A second update, cancelled while it waits.
+    conn = httpclient.HTTPConnection(HOST, HTTP_PORT, timeout=10)
+    board_stop_offers = len(board_seen["offers"])
+    conn.request("POST", f"/api/v1/nodes/{AREA}/13/update?offer={offer_hex(502, image[:300])}", body=image[:300],
+                 headers={"Content-Type": "application/octet-stream", "Authorization": f"Bearer {TOKEN}"})
+    resp = conn.getresponse()
+    resp.read()
+    conn = httpclient.HTTPConnection(HOST, HTTP_PORT, timeout=10)
+    conn.request("POST", f"/api/v1/nodes/{AREA}/13/update?offer={offer_hex(503, image[:300])}", body=image[:300],
+                 headers={"Content-Type": "application/octet-stream", "Authorization": f"Bearer {TOKEN}"})
+    resp = conn.getresponse()
+    busy = resp.status
+    resp.read()
+    if busy != 409:
+        failures.append(f"a second update for a board with one under way is refused: {busy}")
+    status, body = http("DELETE", f"/api/v1/nodes/{AREA}/13/update")
+    deadline = time.time() + 2
+    while time.time() < deadline and 502 not in board_seen["cancels"]:
+        time.sleep(0.05)
+    if status != 200 or json.loads(body).get("state") != "cancelled" or 502 not in board_seen["cancels"]:
+        failures.append(f"an update is cancelled, and the board is told: {status} {body} {board_seen['cancels']}")
+    board_stop.set()
+    board_thread.join(timeout=2)
+
     # 3. Control: POST sampling-rate, answer the gateway's 0x0301 with a 0x0302.
-    import threading
 
     def node_responder():
         try:

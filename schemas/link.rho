@@ -68,3 +68,35 @@ message Health {
     fault_uptime_ms: u32
     firmware_version: u16
 }
+
+// What an update is, signed by the mesh's update key (PROTO-0008).
+message UpdateManifest {
+    update_id: u32
+    uid: u8[8]
+    firmware_version: u16
+    security_version: u32
+    size: u32
+    sha256: u8[32]
+    chunk_size: u16
+}
+
+// UPDATE_OFFER: the manifest and its Ed25519 signature.
+message UpdateOffer {
+    manifest: UpdateManifest
+    signature: u8[64]
+}
+
+// UPDATE_STATUS: where the update stands, and what the board runs.
+message UpdateStatus {
+    update_id: u32
+    state: UpdateState
+    reason: UpdateReason
+    next_index: u32
+    running_version: u16
+    running_slot: u8
+}
+
+// UPDATE_CANCEL: stop the update under way.
+message UpdateCancel {
+    update_id: u32
+}

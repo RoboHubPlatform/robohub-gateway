@@ -43,6 +43,20 @@ fn robohub_v1_put_string(value: string, width: u32) string {
     }
     return out
 }
+fn robohub_v1_put_bytes(value: string, width: u32) string {
+    var out: string = ""
+    var i: u32 = 0
+    let length: u32 = strlen(value)
+    while i < width {
+        if i < length {
+            out = out + str_from_byte(str_at(value, i))
+        } else {
+            out = out + str_from_byte(u8(0))
+        }
+        i = i + 1
+    }
+    return out
+}
 fn robohub_v1_get_string(data: string, off: u32, width: u32) string {
     var n: u32 = 0
     while n < width {
@@ -71,6 +85,10 @@ const MESSAGE_ID_CONTROL_RESPONSE: u32 = 770
 const MESSAGE_ID_DIAG_REQUEST: u32 = 1025
 const MESSAGE_ID_DIAG_RESPONSE: u32 = 1026
 const MESSAGE_ID_HEALTH: u32 = 1027
+const MESSAGE_ID_UPDATE_OFFER: u32 = 1281
+const MESSAGE_ID_UPDATE_CHUNK: u32 = 1282
+const MESSAGE_ID_UPDATE_STATUS: u32 = 1283
+const MESSAGE_ID_UPDATE_CANCEL: u32 = 1284
 
 // ResetReason values.
 const RESET_REASON_UNKNOWN: u32 = 0
@@ -150,6 +168,30 @@ const POWER_FIELD_BATTERY_POWER: u32 = 8
 const POWER_FIELD_BATTERY_SOC: u32 = 16
 const POWER_FIELD_ENERGY_TODAY: u32 = 32
 const POWER_FIELD_ENERGY_TOTAL: u32 = 64
+
+// UpdateState values.
+const UPDATE_STATE_ACCEPTED: u32 = 1
+const UPDATE_STATE_REFUSED: u32 = 2
+const UPDATE_STATE_RECEIVING: u32 = 3
+const UPDATE_STATE_VERIFIED: u32 = 4
+const UPDATE_STATE_CONFIRMED: u32 = 5
+const UPDATE_STATE_ROLLED_BACK: u32 = 6
+const UPDATE_STATE_FAILED: u32 = 7
+
+// UpdateReason values.
+const UPDATE_REASON_NONE: u32 = 0
+const UPDATE_REASON_SIGNATURE: u32 = 1
+const UPDATE_REASON_OTHER_BOARD: u32 = 2
+const UPDATE_REASON_DOWNGRADE: u32 = 3
+const UPDATE_REASON_TOO_LARGE: u32 = 4
+const UPDATE_REASON_NOT_UPDATABLE: u32 = 5
+const UPDATE_REASON_BUSY: u32 = 6
+const UPDATE_REASON_NOT_PROVISIONED: u32 = 7
+const UPDATE_REASON_HASH: u32 = 8
+const UPDATE_REASON_CANCELLED: u32 = 9
+const UPDATE_REASON_TIMEOUT: u32 = 10
+const UPDATE_REASON_WRITE: u32 = 11
+const UPDATE_REASON_BAD_OFFER: u32 = 12
 
 // DeviceId is DeviceId on the wire, the version byte included.
 struct DeviceId {
@@ -317,6 +359,162 @@ fn health_unmarshal(data: string) Health {
     off = off + 4
     let firmware_version: u16 = robohub_v1_get_u16(data, off)
     return Health { device, reset_reason, boot_count, fault_code, fault_task, fault_pc, fault_uptime_ms, firmware_version }
+}
+
+// UpdateManifest is UpdateManifest on the wire, the version byte included.
+struct UpdateManifest {
+    update_id: u32
+    uid: string
+    firmware_version: u16
+    security_version: u32
+    size: u32
+    sha256: string
+    chunk_size: u16
+}
+
+// update_manifest_valid reports whether a payload is a whole UpdateManifest of this version.
+fn update_manifest_valid(data: string) bool {
+    if strlen(data) < 57 {
+        return false
+    }
+    return u32(str_at(data, 0)) == 1
+}
+
+// update_manifest_marshal writes a UpdateManifest: the version byte and its fields.
+fn update_manifest_marshal(value: UpdateManifest) string {
+    var out: string = str_from_byte(u8(1))
+    out = out + robohub_v1_put_u32(value.update_id)
+    out = out + robohub_v1_put_bytes(value.uid, 8)
+    out = out + robohub_v1_put_u16(value.firmware_version)
+    out = out + robohub_v1_put_u32(value.security_version)
+    out = out + robohub_v1_put_u32(value.size)
+    out = out + robohub_v1_put_bytes(value.sha256, 32)
+    out = out + robohub_v1_put_u16(value.chunk_size)
+    return out
+}
+
+// update_manifest_unmarshal reads a payload this schema's update_manifest_valid accepted.
+fn update_manifest_unmarshal(data: string) UpdateManifest {
+    var off: u32 = 1
+    let update_id: u32 = robohub_v1_get_u32(data, off)
+    off = off + 4
+    let uid: string = str_slice(data, off, 8)
+    off = off + 8
+    let firmware_version: u16 = robohub_v1_get_u16(data, off)
+    off = off + 2
+    let security_version: u32 = robohub_v1_get_u32(data, off)
+    off = off + 4
+    let size: u32 = robohub_v1_get_u32(data, off)
+    off = off + 4
+    let sha256: string = str_slice(data, off, 32)
+    off = off + 32
+    let chunk_size: u16 = robohub_v1_get_u16(data, off)
+    return UpdateManifest { update_id, uid, firmware_version, security_version, size, sha256, chunk_size }
+}
+
+// UpdateOffer is UpdateOffer on the wire, the version byte included.
+struct UpdateOffer {
+    manifest: UpdateManifest
+    signature: string
+}
+
+// update_offer_valid reports whether a payload is a whole UpdateOffer of this version.
+fn update_offer_valid(data: string) bool {
+    if strlen(data) < 122 {
+        return false
+    }
+    return u32(str_at(data, 0)) == 1
+}
+
+// update_offer_marshal writes a UpdateOffer: the version byte and its fields.
+fn update_offer_marshal(value: UpdateOffer) string {
+    var out: string = str_from_byte(u8(1))
+    out = out + update_manifest_marshal(value.manifest)
+    out = out + robohub_v1_put_bytes(value.signature, 64)
+    return out
+}
+
+// update_offer_unmarshal reads a payload this schema's update_offer_valid accepted.
+fn update_offer_unmarshal(data: string) UpdateOffer {
+    var off: u32 = 1
+    let manifest: UpdateManifest = update_manifest_unmarshal(str_slice(data, off, 57))
+    off = off + 57
+    let signature: string = str_slice(data, off, 64)
+    return UpdateOffer { manifest, signature }
+}
+
+// UpdateStatus is UpdateStatus on the wire, the version byte included.
+struct UpdateStatus {
+    update_id: u32
+    state: u32
+    reason: u32
+    next_index: u32
+    running_version: u16
+    running_slot: u8
+}
+
+// update_status_valid reports whether a payload is a whole UpdateStatus of this version.
+fn update_status_valid(data: string) bool {
+    if strlen(data) < 20 {
+        return false
+    }
+    return u32(str_at(data, 0)) == 1
+}
+
+// update_status_marshal writes a UpdateStatus: the version byte and its fields.
+fn update_status_marshal(value: UpdateStatus) string {
+    var out: string = str_from_byte(u8(1))
+    out = out + robohub_v1_put_u32(value.update_id)
+    out = out + robohub_v1_put_u32(value.state)
+    out = out + robohub_v1_put_u32(value.reason)
+    out = out + robohub_v1_put_u32(value.next_index)
+    out = out + robohub_v1_put_u16(value.running_version)
+    out = out + robohub_v1_put_u8(value.running_slot)
+    return out
+}
+
+// update_status_unmarshal reads a payload this schema's update_status_valid accepted.
+fn update_status_unmarshal(data: string) UpdateStatus {
+    var off: u32 = 1
+    let update_id: u32 = robohub_v1_get_u32(data, off)
+    off = off + 4
+    let state: u32 = robohub_v1_get_u32(data, off)
+    off = off + 4
+    let reason: u32 = robohub_v1_get_u32(data, off)
+    off = off + 4
+    let next_index: u32 = robohub_v1_get_u32(data, off)
+    off = off + 4
+    let running_version: u16 = robohub_v1_get_u16(data, off)
+    off = off + 2
+    let running_slot: u8 = robohub_v1_get_u8(data, off)
+    return UpdateStatus { update_id, state, reason, next_index, running_version, running_slot }
+}
+
+// UpdateCancel is UpdateCancel on the wire, the version byte included.
+struct UpdateCancel {
+    update_id: u32
+}
+
+// update_cancel_valid reports whether a payload is a whole UpdateCancel of this version.
+fn update_cancel_valid(data: string) bool {
+    if strlen(data) < 5 {
+        return false
+    }
+    return u32(str_at(data, 0)) == 1
+}
+
+// update_cancel_marshal writes a UpdateCancel: the version byte and its fields.
+fn update_cancel_marshal(value: UpdateCancel) string {
+    var out: string = str_from_byte(u8(1))
+    out = out + robohub_v1_put_u32(value.update_id)
+    return out
+}
+
+// update_cancel_unmarshal reads a payload this schema's update_cancel_valid accepted.
+fn update_cancel_unmarshal(data: string) UpdateCancel {
+    var off: u32 = 1
+    let update_id: u32 = robohub_v1_get_u32(data, off)
+    return UpdateCancel { update_id }
 }
 
 // GatewayId is GatewayId on the wire, the version byte included.

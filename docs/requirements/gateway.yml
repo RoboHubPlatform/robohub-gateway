@@ -226,3 +226,23 @@ requirements:
     owner: maintainer
     changed: 2026-11-20
     tags: [health, api]
+
+  - id: GW-0016
+    title: The gateway carries an update to a board and says how far it got
+    statement: >
+      The gateway shall take an update for one of its boards through its API (the
+      signed manifest and the image), keep the image, send `UPDATE_OFFER`, then
+      the chunks with up to four in flight, resuming from the next index the board
+      reports and resending after 2 s without an answer; show the update's state
+      and progress in the board's entry and in the update's own resource; carry
+      the board's `UPDATE_STATUS` to the API and the outbox; allow one update per
+      board at a time and cancel one on request; and carry update messages through
+      a relay as it carries a board's other sealed frames.
+    rationale: Mesh decides and signs, the gateway is nearest the board and drives the window (robohub ADR-0022, 7); it need not be trusted, since the board checks the signature.
+    satisfies: [SYS-0052, SYS-0072]
+    decided_by: [robohub:ADR-0022]
+    status: approved
+    verification: test
+    owner: maintainer
+    changed: 2026-11-20
+    tags: [updates, api]

@@ -74,6 +74,21 @@ namespace robohub.v1
 //
 //     SESSION_RESET  [reason(u8)]     1 = the gateway restarted
 //
+// The update messages carry firmware to a board (PROTO-0008, robohub ADR-0022).
+// UPDATE_OFFER is an UpdateManifest and its Ed25519 signature, made with the
+// mesh's update key over "rh-update1" followed by the manifest's wire bytes; the
+// board checks it with the public key compiled into its firmware. UPDATE_CHUNK's
+// image runs to the end of the frame, which a schema message cannot say, so it is
+// written out here rather than declared:
+//
+//     UPDATE_CHUNK   update_id(u32) | index(u32) | data (up to the chunk size)
+//
+// little-endian, chunk `index` holding bytes index * chunk_size onward. The
+// board answers with UPDATE_STATUS: accepted (next index 0) or refused with a
+// reason; the next index it expects, at least every fourth chunk and on any
+// chunk out of order; verified when the image is whole and its SHA-256 matches;
+// confirmed or rolled back after it booted the image once.
+//
 // HEALTH is a board's account of its last restart (PROTO-0007): sent once per
 // boot after its session is established, and again when a DIAG_REQUEST asks for
 // it. It is sealed like every L2 message on a network link; a receiver that does
@@ -96,6 +111,10 @@ enum MessageId {
     DIAG_REQUEST = 1025             // 0x0401
     DIAG_RESPONSE = 1026            // 0x0402
     HEALTH = 1027                   // 0x0403, L2, sealed: why a board last restarted
+    UPDATE_OFFER = 1281             // 0x0501, L2, sealed: a signed update manifest, gateway to board
+    UPDATE_CHUNK = 1282             // 0x0502, L2, sealed: part of the image, gateway to board
+    UPDATE_STATUS = 1283            // 0x0503, L2, sealed: where the update stands, board to gateway
+    UPDATE_CANCEL = 1284            // 0x0504, L2, sealed: stop the update, gateway to board
 }
 
 // Why a board last restarted, as robohub-common's health contract names it
@@ -327,4 +346,32 @@ message SensorReading {
     status: u16
     field: string
     value: f32
+}
+
+// Where an update stands, as a board says it in UPDATE_STATUS.
+enum UpdateState {
+    ACCEPTED = 1
+    REFUSED = 2
+    RECEIVING = 3
+    VERIFIED = 4
+    CONFIRMED = 5
+    ROLLED_BACK = 6
+    FAILED = 7
+}
+
+// Why an update was refused or failed.
+enum UpdateReason {
+    NONE = 0
+    SIGNATURE = 1         // the manifest's signature does not verify
+    OTHER_BOARD = 2       // the manifest names another board
+    DOWNGRADE = 3         // its security version is below the board's
+    TOO_LARGE = 4         // the image does not fit the inactive slot
+    NOT_UPDATABLE = 5     // the platform has no second image
+    BUSY = 6              // another update is under way
+    NOT_PROVISIONED = 7   // the firmware was built without an update key
+    HASH = 8              // the image's SHA-256 is not the manifest's
+    CANCELLED = 9         // UPDATE_CANCEL
+    TIMEOUT = 10          // no chunk for 60 s
+    WRITE = 11            // the slot refused a write
+    BAD_OFFER = 12        // the offer is malformed
 }

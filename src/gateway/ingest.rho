@@ -132,6 +132,10 @@ fn ingest_opened(frame: TransportFrame, source: string, sid: string) void {
         if frame.msg_id == MESSAGE_ID_HEALTH && manifest_reading_allowed(sid, frame.payload) {
             handle_health(source, frame.payload)
         }
+        // A board's answer about an update the gateway carries to it.
+        if frame.msg_id == MESSAGE_ID_UPDATE_STATUS {
+            handle_update_status(source, frame.payload)
+        }
         return
     }
 

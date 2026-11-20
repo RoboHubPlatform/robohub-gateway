@@ -42,6 +42,7 @@ include "gateway/outbox.rho"
 include "gateway/state.rho"
 include "gateway/relay.rho"
 include "gateway/relayed.rho"
+include "gateway/update.rho"
 
 import std.web.http
 import std.os.sys
@@ -60,6 +61,9 @@ route POST "/api/v1/nodes/{area}/{node}/diagnostics" => device_diagnostics
 route POST "/api/v1/nodes/{area}/{node}/sampling-rate" => device_sampling_rate
 route POST "/api/v1/nodes/{area}/{node}/command" => device_command
 route POST "/api/v1/nodes/{area}/{node}/switch" => device_switch
+route POST "/api/v1/nodes/{area}/{node}/update" => update_start
+route GET  "/api/v1/nodes/{area}/{node}/update" => update_get
+route DELETE "/api/v1/nodes/{area}/{node}/update" => update_cancel
 route GET  "/api/v1/diagnostics" => diagnostics
 route GET  "/api/v1/keys" => keys_list
 route POST "/api/v1/telemetry/sampling-rate" => set_sampling_rate
@@ -211,6 +215,8 @@ fn background() void {
         }
         drain_uplink()
         relay_tick()
+        // Updates under way: chunks sent as the window allows (gateway/update.rho).
+        update_tick()
         // A board revoked in the manifest loses its sessions within seconds,
         // whether or not it is sending.
         manifest_refresh(false)
